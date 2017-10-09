@@ -8,7 +8,7 @@ $global:logger = [NLog.LogManager]::GetLogger("script-run")
 
 #build list of agents
 $AgentsList = @{}
-$Agents = get-wmiobject -Namespace root\MicrosoftIdentityIntegrationServer -class MIIS_ManagementAgent
+$Agents = ,(get-wmiobject -Namespace root\MicrosoftIdentityIntegrationServer -class MIIS_ManagementAgent)
 0..($Agents.Count-1) | % {$AgentsList.Add($Agents[$_].Name,$_)}
 
 
