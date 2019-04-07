@@ -1,6 +1,6 @@
 # RunScript
 Script funtions for FIM/MIM Synchronization Service
-Uses funtions in PropertySheetBase.dll, no WMI is neede
+Uses funtions in PropertySheetBase.dll, no WMI is needed
 
 # Funtions<br/>
   Get-MAList<br/>
