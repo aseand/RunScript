@@ -574,7 +574,7 @@ function Get-CSXml{
 	}
 }
 
-function Get-CSGuid{
+function Get-CSGuidBySQL{
 	<#
 	  .SYNOPSIS
 	  Get array of guids from MA CS by select object in MV
@@ -662,6 +662,118 @@ function Get-CSGuid{
 	}
 	end{
 		$Connection.Close()
+	}
+}
+
+function Get-CSGuid{
+	<#
+	  .SYNOPSIS
+	  Get array of guid from CS object by MV object
+	  .DESCRIPTION
+	  Get array of guid from CS object by MV object
+	  .EXAMPLE
+	  Get-CSGuid -maName AD -mvGuids "166cc497-4b0e-4030-9b03-8f81cfbb7052"
+	  .EXAMPLE
+	  Get-CSGuid -maName AD -mvGuids @("166cc497-4b0e-4030-9b03-8f81cfbb7052","166cc498-4b0e-4030-9b03-8f81cfbb7052") -GridView
+	  .PARAMETER maGuid
+	  Guid of MA
+	  .PARAMETER maName
+	  Name of MA
+	  .PARAMETER mvGuids
+	  Guids of mv object id
+	  .PARAMETER GridView
+	  Display and select CS object to list
+	#>
+  [CmdletBinding()]
+	param(
+		[String]$maName,
+		[Guid]$maGuid,
+		[Guid[]]$mvGuids,
+		[switch]$GridView,
+		$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
+	)
+	process{
+		if(-NOT $maGuid -AND $maName){
+			$maGuid = Get-maguid -maName $maName
+			if(-NOT $maGuid){ Throw "Missing MA '$maName'" }
+		}
+		
+		$DataTable = New-Object system.Data.DataTable "csGuids"
+		$DataTable.Columns.Add("cs-dn")
+		$DataTable.Columns.Add("cs-guid")
+		
+		foreach($mvGuid in $mvGuids){
+			[xml]$Connectors = $MMSWebService.GetMVConnectors($mvGuid)
+			foreach($csmvlink in $connectors.'cs-mv-links'.'cs-mv-value'){
+				if($csmvlink.'ma-guid' -eq $maguid){
+					[void]$CSGuids.Add($csmvlink.'cs-dn',$csmvlink.'cs-guid')
+				}
+			}
+		}
+		
+		if($GridView){
+			$SelectData = $DataTable|Out-GridView -Title "CS object select" -OutputMode Multiple
+		}else{
+			$SelectData = $DataTable.Rows
+		}
+		
+		$CSGuids = New-Object System.Collections.ArrayList
+		foreach($row in $SelectData){
+			[void]$CSGuids.Add($row["cs-guid"])
+		}
+		
+		
+		(,$CSGuids.ToArray())
+	}
+}
+
+function Get-SearchMV{
+	<#
+	  .SYNOPSIS
+	  Search MV data and get mv object
+	  .DESCRIPTION
+	  Search MV data and get mv object
+	  .EXAMPLE
+	  Get-SearchMV -searchAttrs @{name="accountName";value="anase";searchtype="exact";type="string"} -objecttype person
+	  .EXAMPLE
+	  Get-SearchMV -searchAttrs @(@{name="accountName";value="anase";searchtype="exact";type="string"},@{name="accountName";value="anase2";searchtype="exact";type="string"})
+	  .PARAMETER objecttype
+	  MV object type
+	  .PARAMETER searchAttrs
+	  Array of search object (Hashtable) most contains  name, value, searchtype, type(data type)
+	  ex. @{name="accountName";value="anase";searchtype="exact";type="string"}
+	  searchtype values: exact, starts, ends, contains, not-contains, value-exists, no-value
+	  type values: string, integer, binary, bit
+	#>
+  [CmdletBinding()]
+	param(
+		[Parameter(Mandatory = $true)]
+		[Object[]]$searchAttrs,
+		[string]$objecttype = "person"
+	)
+	process{
+		if(-NOT $searchAttrs){
+			Throw "Missing searchAttrs" 
+		}
+		
+		$attFilter = ""
+		foreach($searchAttr in $searchAttrs){
+			$attFilter += "<mv-attr name=`""+$searchAttr.Name+"`" type=`""+$searchAttr.type+"`" search-type=`""+$searchAttr.searchtype+"`"><value>"+$searchAttr.value+"</value></mv-attr>"
+			#$attFilter += "<mv-attr name=`"accountName2`" type=`"string`" search-type=`"exact`"><value>value2</value></mv-attr>"
+		}
+		$objectfilter = "<mv-object-type>$objecttype</mv-object-type>"
+		$mvfilter = "<mv-filter collation-order=`"Latin1_General_CI_AS`">{0}{1}</mv-filter>" -f $attFilter,$objectfilter
+		
+		#$mvfilter
+		#$filter = "<mv-filter collation-order=`"Latin1_General_CI_AS`"><mv-object-type>synchronizationRule</mv-object-type></mv-filter>"
+		#$filter = "<mv-filter collation-order=`"Latin1_General_CI_AS`"><mv-attr name=`"accountName`" type=`"string`" search-type=`"exact`"><value>value</value></mv-attr><mv-object-type>person</mv-object-type></mv-filter>"
+		#$filter = "<mv-filter collation-order=`"Latin1_General_CI_AS`"><mv-attr name=`"accountName`" type=`"string`" search-type=`"exact`"><value>value</value></mv-attr><mv-attr name=`"accountName2`" type=`"string2`" search-type=`"exact`"><value>value2</value></mv-attr><mv-object-type>person</mv-object-type></mv-filter>"
+		
+		[xml]$SearchMVXml = "<mv-objects>" + ($MMSWebService.SearchMV($mvfilter)).Replace("<mv-objects>","").Replace("</mv-objects>","") + "</mv-objects>"
+		
+		#[xml]$Connectors = $MMSWebService.GetMVConnectors("MVGuid")
+		
+		$SearchMVXml
 	}
 }
 
