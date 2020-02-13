@@ -196,7 +196,7 @@ function Start-MA{
 			$timer.Enabled = $true
 		}
 		
-		$logger.Info("Start ma '$maName' DontWait:$DontWait '$Profile' SaveCSChangeData:$SaveCSChangeData")
+		$logger.Info("Start ma '$maName' '$Profile' DontWait:$DontWait SaveCSChangeData:$SaveCSChangeData")
 
 		if(-NOT $DontWait){
 			Run-Agent -maName $maName -maGuid $maGuid -Profile $Profile -ProfileXml ("<run-configuration>{0}</run-configuration>" -f $profiles[$Profileindex].InnerXml) -SaveCSChangeData:$SaveCSChangeData -MMSWebService $MMSWebService -logger $logger
@@ -277,7 +277,6 @@ function Run-Agent{
 		$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
 	)
 	process{
-	#. C:\Atea\Scripts\MIM.syncservice.funtions.OP.ps1
 	#$logger.Info("Run-Agent $scriptPath")
 	if($scriptPath){ Import-Module $scriptPath }
 		if($logger.IsDebugEnabled){ 
@@ -337,23 +336,30 @@ function Run-Agent{
 		$Retry = $false
 		$RetryCount = 0
 		do{
-		$MaStartTime = [DateTime]::Now
-		$Resualt = $MMSWebService.RunMA("{$maGuid}".ToUpper(),$ProfileXml,$false)
-		
-		#$logger.Debug("Resualt:$Resualt")
-		
-		if($Resualt){
-			#write-error $Resualt $MAName $Profile
-			$logger.Error("Runing ma $maName")
-			$logger.Error("$Resualt")
-			Throw $Resualt
-			return
-		}
+			$MaStartTime = [DateTime]::Now
+			$Resualt = $MMSWebService.RunMA("{$maGuid}".ToUpper(),$ProfileXml,$false)
+			
+			#$logger.Debug("Resualt:$Resualt")
+			
+			if($Resualt){
+				#write-error $Resualt $MAName $Profile
+				$logger.Error("Runing ma $maName")
+				$logger.Error("$Resualt")
+				Throw $Resualt
+				return
+			}
 			$logger.Trace("Wait on ma $maName")
 			$Done = $false
 			while(-NOT $Done){
 				sleep 1
 				$RunStatus = Get-MAStatistics -maGuid $maGuid -RunStatus -MMSWebService $MMSWebService
+				
+				#Error
+				if(-NOT $RunStatus){
+					$logger.Error("No run status!")
+					break
+				}
+				
 				#$logger.Trace("$RunStatus")
 				if($RunStatus -eq "MA_EXEC_STATE_IDLE")
 				{
@@ -370,11 +376,10 @@ function Run-Agent{
 			$result = $runhistory.lastRunXml.'run-history'.'run-details'.result
 			if($result -ne "success"){
 				$logger.Error("$Profile on $maName $result")
-				switch($result){
-					"stopped-server" { continue }
-					"stopped-database-connection-lost" {
+				switch -wildcard ($result){
+					"stopped-*" { 
 						$logger.Info("Retry run...")
-						wait 60
+						sleep 60
 						$Retry = $true
 					}
 				}
@@ -403,7 +408,8 @@ function Run-Agent{
 							foreach($ErrorNode in $Node.ChildNodes){
 								if($logger.IsDebugEnabled){$logger.Debug((Write-XmlToScreen ($ErrorNode.OuterXml)))}
 								foreach($InnerErrorNode in $ErrorNode.ChildNodes){
-									$logger.Info($ErrorNode.Name + ": " + $InnerErrorNode.Name + " " + $InnerErrorNode.InnerText)
+									if($ErrorNode.Attributes["dn"]){$DN = $ErrorNode.Attributes["dn"].Value} else { $DN = "" }
+									$logger.Info($ErrorNode.Name + ": " + $DN +" " + $InnerErrorNode.Name + " " + $InnerErrorNode.InnerText)
 								}
 							}
 						}
@@ -419,7 +425,7 @@ function Run-Agent{
 						foreach($CountNode in $Node.ChildNodes){		
 							$Value = [int]::Parse($CountNode.InnerText)
 							if($Value -gt 0){
-								$logger.Info($CountNode.Name + " $Value")
+								$logger.Info(("{0} {1} {2}" -f $Node.Name,$CountNode.Name,$Value))
 							}
 						}
 					}
