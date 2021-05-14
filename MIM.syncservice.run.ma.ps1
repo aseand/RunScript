@@ -4,6 +4,9 @@
 #Variables
 $global:SqlConnectionString = "Data Source=localhost;Initial Catalog=FIMSynchronizationService;Integrated Security=SSPI;"
 
+#For name and profile test without running
+#$global:NameTest = $true
+
 #Nlog
 #Download Nlog
 if(-NOT (Test-Path (join-path ($PSScriptRoot) NLog.dll)))
@@ -21,16 +24,16 @@ if(-NOT (Test-Path (join-path ($PSScriptRoot) NLog.dll)))
 Add-Type -Path (join-path ($PSScriptRoot) NLog.dll)
 
 #Nlog 
-if((Test-Path (join-path ($PSScriptRoot) "NLog.config.xml") )){
+if((Test-Path (join-path ($PSScriptRoot) "NLog.config.xml")) ){
 	([NLog.LogManager]::Configuration) = new-object NLog.Config.XmlLoggingConfiguration((join-path ($PSScriptRoot) "NLog.config.xml"))
-	$global:logger = [NLog.LogManager]::GetLogger("MIM.syncservice.run.ma")
+	
 }else{
 	$Configuration = New-Object NLog.Config.LoggingConfiguration
-	$Configuration.AddRule("Trace", "Fatal", (new-object NLog.Targets.ConsoleTarget),"*")
+	#$Configuration.AddRule("Trace", "Fatal", (new-object NLog.Targets.ConsoleTarget),"*")
+	$Configuration.AddRule("Info", "Fatal", (new-object NLog.Targets.ConsoleTarget),"*")
 	[NLog.LogManager]::Configuration = $Configuration
-	
-	$global:logger = [NLog.LogManager]::GetCurrentClassLogger()
 }
+
 
 function Start-MA{
 	<#
@@ -69,7 +72,6 @@ function Start-MA{
 	param
 	(
 		[string]$maName,
-		[guid]$maGuid,
 		[Parameter(Mandatory = $true)]
 		[string]$profile,
 		[int]$TimeOutMin = 0,
@@ -78,9 +80,13 @@ function Start-MA{
 		[switch]$RunOnChange,
 		[switch]$DontWait,
 		[switch]$SaveCSChangeData,
-		$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
+		[guid]$maGuid
 	)
 	process{
+		
+		$logger = [NLog.LogManager]::GetLogger("MIM.syncservice.run.ma")
+		#$global:logger = [NLog.LogManager]::GetCurrentClassLogger()
+		
 		if($logger.IsDebugEnabled){ 
 			foreach ($Name in ((Get-Command -Name ($PSCmdlet.MyInvocation.InvocationName)).Parameters).Keys) {
 				try{$logger.Debug("$Name :" + (Get-Variable $Name -ValueOnly -ErrorAction SilentlyContinue))}Catch{}
@@ -88,13 +94,19 @@ function Start-MA{
 		}
 	
 		$StartTime = [DateTime]::Now
+		
+		if((Get-Service FIMSynchronizationService).Status -ne "Running"){ 
+			$logger.Warn("FIMSynchronizationService not running, try Start-Service")
+			Start-Service FIMSynchronizationService
+			sleep 10
+		}
 	
 		#Get MA guid
 		if(-NOT $maGuid){
-			$returnvalue = Get-MAguid -maName $maName -MMSWebService $MMSWebService
+			$returnvalue = Get-MAguid -maName $maName
 			if(-NOT $returnvalue){
-				$logger.Error("Missing MA '$maName'")
-				Throw "Missing MA '$maName'"
+				$logger.Fatal("Start-MA Missing MA '$maName'")
+				Throw "Start-MA Missing MA '$maName'"
 				return
 			}
 			$maGuid = $returnvalue
@@ -102,30 +114,34 @@ function Start-MA{
 		
 		#Get MA name
 		if(-NOT $maName){
-			$maName = Get-MAname -maGuid $maGuid -MMSWebService $MMSWebService
+			$maName = Get-MAname -maGuid $maGuid
 			if(-NOT $maName){
-				$logger.Error("Missing MA '$maGuid'")
-				Throw "Missing MA '$maGuid'"
+				$logger.Fatal("Start-MA Missing MA '$maGuid'")
+				Throw "Start-MA Missing MA '$maGuid'"
 				return
 			}
 		}
+		#
+		$logger = [NLog.LogManager]::GetLogger("MIM.syncservice.run.ma.$maName")
 		
-		$RunStatus = Get-MAStatistics -maGuid $maGuid -RunStatus -MMSWebService $MMSWebService
-		$logger.Debug("MA '$maName' '$maGuid' $profile runStatus $RunStatus ")
+		$RunStatus = Get-MAStatistics -maGuid $maGuid -RunStatus
+		$logger.Debug("MA '$maName' '$maGuid' '$profile' runStatus '$RunStatus' ")
 		if($RunStatus -ne "MA_EXEC_STATE_IDLE")
 		{
-			$logger.Error("MA is running '$maName' '$maGuid'")
+			$logger.Fatal("MA is running '$maName' '$maGuid'")
 			Throw "MA is running'$maName - $maGuid'"
 			return
 		}
-
-		$profiles = ([xml]$MMSWebService.GetMaData("{$maGuid}".ToUpper(),1048592,539,27)).'ma-data'.'ma-run-data'.'run-configuration'
+		
+		$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
+		[array]$profiles = ([xml]$MMSWebService.GetMaData("{$maGuid}".ToUpper(),1048592,539,27)).'ma-data'.'ma-run-data'.'run-configuration'
 		#$profiles = ([xml]$MMSWebService.GetRunData([uint32]::MaxValue,"{$maGuid}".ToUpper(),"")).'ma-run-data'.'run-configuration'
 		$profileIndex = $profiles.name.ToLower().IndexOf($Profile.ToLower())
 
-		if($profileIndex -eq -1){
-			$logger.Error("No profile $Profile for $maName")
-			Throw "No profile $Profile for $maName"
+		if($profileIndex -eq -1 -OR $profiles[$profileIndex].InnerXml.Length -lt 1){
+			$logger.Fatal("No profile '$Profile' ")
+			$logger.Debug($profiles[$profileIndex].InnerXml)
+			Throw "No profile '$Profile' for '$maName'"
 			return
 		}
 		
@@ -134,7 +150,7 @@ function Start-MA{
 		$logger.Debug("steptype $steptype")
 
 		$StatCount = -1
-		$MAStatistics = Get-MAStatistics -maGuid $maGuid -ChangeCounters -MMSWebService $MMSWebService
+		$MAStatistics = Get-MAStatistics -maGuid $maGuid -ChangeCounters
 		if($logger.IsDebugEnabled){
 			foreach($name in $MAStatistics.Keys){
 				$logger.Debug("{0} {1}",$name,$MAStatistics[$name])
@@ -144,14 +160,14 @@ function Start-MA{
 			"*export" {
 				$StatCount = $MAStatistics.exportcount
 				if($DeleteThreshold -gt 0 -AND $MAStatistics.exportdelete -gt 0 -AND $MAStatistics.exportdelete -gt $DeleteThreshold){
-					$logger.Error("Error threshold $DeleteThreshold  / " + $MAStatistics.exportdelete )
-					Throw "Error threshold $DeleteThreshold  / " + $MAStatistics.exportdelete 
+					$logger.Fatal("'$Profile' threshold $DeleteThreshold  / " + $MAStatistics.exportdelete )
+					Throw "'$maName' '$Profile' threshold $DeleteThreshold  / " + $MAStatistics.exportdelete 
 					return
 				}
 				if($DeleteRatio -gt 0 -AND $MAStatistics.exportdelete -gt 0 -AND ($MAStatistics.exportdelete/$MAStatistics.all * 100) -gt $DeleteRatio){
-					$Value = $MAStatistics.importdelete/$MAStatistics.all * 100
-					$logger.Error("Error threshold ratio $DeleteRatio% Current value: $Value%")
-					Throw "Error threshold ratio $DeleteRatio% Current value: $Value%"
+					$Value = $MAStatistics.exportdelete/$MAStatistics.all * 100
+					$logger.Fatal("'$Profile' threshold ratio $DeleteRatio% Current value: $Value%")
+					Throw "'$maName' '$Profile' threshold ratio $DeleteRatio% Current value: $Value%"
 					return
 				}
 			}
@@ -161,14 +177,14 @@ function Start-MA{
 				$DontWait = $false
 				$StatCount = $MAStatistics.importcount
 				if($DeleteThreshold -gt 0 -AND $MAStatistics.importdelete -gt 0 -AND $MAStatistics.importdelete -gt $DeleteThreshold){
-					$logger.Error("Error threshold ratio $DeleteRatio% Current value: $Value%")
-					Throw "Error threshold $DeleteThreshold  / " + $MAStatistics.importdelete 
+					$logger.Fatal("'$Profile' threshold $DeleteThreshold  / " + $MAStatistics.importdelete )
+					Throw "'$maName' '$Profile' threshold $DeleteThreshold  / " + $MAStatistics.importdelete 
 					return
 				}
 				if($DeleteRatio -gt 0 -AND $MAStatistics.importdelete -gt 0 -AND ($MAStatistics.importdelete/$MAStatistics.all * 100) -gt $DeleteRatio){
 					$Value = $MAStatistics.importdelete/$MAStatistics.all * 100
-					$logger.Error("Error threshold ratio $DeleteRatio% Current value: $Value%")
-					Throw "Error threshold ratio $DeleteRatio% Current value: $Value%"
+					$logger.Fatal("'$Profile' threshold ratio $DeleteRatio% Current value: $Value%")
+					Throw "'$maName' '$Profile' threshold ratio $DeleteRatio% Current value: $Value%"
 					return
 				}
 			}
@@ -189,8 +205,8 @@ function Start-MA{
 			$Timeoutaction = Register-ObjectEvent -InputObject $timer -SourceIdentifier $maGuid -MessageData $maName -EventName Elapsed -Action { 
 				Stop-MA -maGuid $Event.SourceIdentifier
 				#Write-Output -ForegroundColor Red -BackgroundColor Black  ("Timeout MA " + $Event.MessageData)
-				$logger.Error("Timeout MA " + $Event.MessageData)
-				Throw "Timeout MA " + $Event.MessageData
+				$logger.Fatal("'$Profile' Timeout MA " + $Event.MessageData)
+				Throw "'$maName' '$Profile' Timeout MA " + $Event.MessageData
 				return
 			} 
 			$timer.Enabled = $true
@@ -199,8 +215,8 @@ function Start-MA{
 		$logger.Info("Start ma '$maName' '$Profile' DontWait:$DontWait SaveCSChangeData:$SaveCSChangeData")
 
 		if(-NOT $DontWait){
-			Run-Agent -maName $maName -maGuid $maGuid -Profile $Profile -ProfileXml ("<run-configuration>{0}</run-configuration>" -f $profiles[$Profileindex].InnerXml) -SaveCSChangeData:$SaveCSChangeData -MMSWebService $MMSWebService -logger $logger
-			$logger.Info("'$maName' '$Profile' for " + ([DateTime]::now - $StartTime).TotalSeconds + "s")
+			Run-Agent -maName $maName -maGuid $maGuid -Profile $Profile -ProfileXml ("<run-configuration>{0}</run-configuration>" -f $profiles[$Profileindex].InnerXml) -SaveCSChangeData:$SaveCSChangeData -logger $logger
+			$logger.Info("'$Profile' for " + ([DateTime]::now - $StartTime).TotalSeconds + "s")
 		}else{
 			
 			#$scriptPath = (join-path ($PSScriptRoot) MIM.syncservice.run.ma.ps1)
@@ -219,7 +235,7 @@ function Start-MA{
 			#$PowerShell.Invoke()
 			#$PowerShell.Commands.Commands.RemoveAt(0)
 			
-			$PowerShell = [PowerShell]::Create().AddScript(${Function:Run-Agent}).AddArgument($maName).AddArgument($maGuid).AddArgument($Profile).AddArgument($("<run-configuration>{0}</run-configuration>" -f $profiles[$Profileindex].InnerXml)).AddArgument($SaveCSChangeData).AddArgument($scriptPath).AddArgument($logger).AddArgument($MMSWebService)
+			$PowerShell = [PowerShell]::Create().AddScript(${Function:Run-Agent}).AddArgument($maName).AddArgument($maGuid).AddArgument($Profile).AddArgument($("<run-configuration>{0}</run-configuration>" -f $profiles[$Profileindex].InnerXml)).AddArgument($SaveCSChangeData).AddArgument($scriptPath).AddArgument($logger)
 			$PowerShell.RunspacePool = $runspacepool
 			$temp = New-Object -TypeName PSObject -Property @{
 				PowerShell = $PowerShell 
@@ -273,8 +289,7 @@ function Run-Agent{
 		$ProfileXml,
 		$SaveCSChangeData,
 		$scriptPath,
-		$logger,
-		$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
+		$logger
 	)
 	process{
 	#$logger.Info("Run-Agent $scriptPath")
@@ -287,10 +302,10 @@ function Run-Agent{
 		
 		#Get MA guid
 		if(-NOT $maGuid){
-			$returnvalue = Get-MAguid -maName $maName -MMSWebService $MMSWebService
+			$returnvalue = Get-MAguid -maName $maName
 			if(-NOT $returnvalue){
-				$logger.Error("Missing MA '$maName'")
-				Throw "Missing MA '$maName'"
+				$logger.Fatal("Run-Agent Missing MA '$maName'")
+				Throw "Run-Agent Missing MA '$maName'"
 				return
 			}
 			$maGuid = $returnvalue
@@ -298,30 +313,33 @@ function Run-Agent{
 		
 		#Get MA name
 		if(-NOT $maName){
-			$maName = Get-MAname -maGuid $maGuid -MMSWebService $MMSWebService
+			$maName = Get-MAname -maGuid $maGuid
 			if(-NOT $maName){
-				$logger.Error("Missing MA '$maGuid'")
-				Throw "Missing MA '$maGuid'"
+				$logger.Fatal("Run-Agent Missing MA '$maGuid'")
+				Throw "Run-Agent Missing MA '$maGuid'"
 				return
 			}
 		}
 		
-		$RunStatus = Get-MAStatistics -maGuid $maGuid -RunStatus -MMSWebService $MMSWebService
+		$RunStatus = Get-MAStatistics -maGuid $maGuid -RunStatus
 		$logger.Debug("MA '$maName' '$maGuid' $profile runStatus $RunStatus ")
 		if($RunStatus -ne "MA_EXEC_STATE_IDLE")
 		{
-			$logger.Error("MA is running '$maName' '$maGuid'")
+			$logger.Fatal("MA is running '$maName' '$maGuid'")
 			Throw "MA is running'$maName - $maGuid'"
 			return
 		}
 		
+		
 		if(-NOT $ProfileXml){
-			$profiles = ([xml]$MMSWebService.GetMaData("{$maGuid}".ToUpper(),1048592,539,27)).'ma-data'.'ma-run-data'.'run-configuration'
+		
+			$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
+			$profiles = (,([xml]$MMSWebService.GetMaData("{$maGuid}".ToUpper(),1048592,539,27)).'ma-data'.'ma-run-data'.'run-configuration')
 			#$profiles = ([xml]$MMSWebService.GetRunData([uint32]::MaxValue,"{$maGuid}".ToUpper(),"")).'ma-run-data'.'run-configuration'
 			$profileIndex = $profiles.name.ToLower().IndexOf($Profile.ToLower())
 
 			if($profileIndex -eq -1){
-				$logger.Error("No profile $Profile for $maName")
+				$logger.Fatal("No profile $Profile")
 				Throw "No profile $Profile for $maName"
 				return
 			}
@@ -331,33 +349,55 @@ function Run-Agent{
 		
 		#Run MA
 		$logger.Debug("Run agent '$maName' '$maGuid' '$ProfileXml' SaveCSChangeData:$SaveCSChangeData")
-		$logger.Info("Run ma '$maName' '$Profile' SaveCSChangeData:$SaveCSChangeData")
+		$logger.Info("Run '$Profile' SaveCSChangeData:$SaveCSChangeData")
+		
+		if($NameTest){
+			return
+		}
 		
 		$Retry = $false
 		$RetryCount = 0
 		do{
 			$MaStartTime = [DateTime]::Now
+			
+			$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
 			$Resualt = $MMSWebService.RunMA("{$maGuid}".ToUpper(),$ProfileXml,$false)
 			
 			#$logger.Debug("Resualt:$Resualt")
 			
 			if($Resualt){
 				#write-error $Resualt $MAName $Profile
-				$logger.Error("Runing ma $maName")
-				$logger.Error("$Resualt")
+				#$logger.Error("Runing '$Profile'")
+				$logger.Fatal("Runing '$Profile' Resualt: $Resualt")
 				Throw $Resualt
 				return
 			}
-			$logger.Trace("Wait on ma $maName")
+			
+			$runhistory = Get-MAStatistics -maGuid $maGuid
+			$runnumber = $runhistory.lastRunXml.'run-history'.'run-details'.'run-number'
+			
+			$logger.Trace("Wait on '$Profile' runnumber: $runnumber")
 			$Done = $false
 			while(-NOT $Done){
 				sleep 1
-				$RunStatus = Get-MAStatistics -maGuid $maGuid -RunStatus -MMSWebService $MMSWebService
+				$RunStatus = Get-MAStatistics -maGuid $maGuid -RunStatus
 				
 				#Error
 				if(-NOT $RunStatus){
-					$logger.Error("No run status!")
-					break
+					$logger.Warn("No run status, retry in 60s...")
+					sleep 60
+					
+					if((Get-Service FIMSynchronizationService).Status -ne "Running"){ 
+						$logger.Error("FIMSynchronizationService not running, try Start-Service")
+						Start-Service FIMSynchronizationService
+						sleep 10
+					}
+
+					$RunStatus = Get-MAStatistics -maGuid $maGuid -RunStatus
+					if(-NOT $RunStatus){
+						$logger.Error("No run status. FIMSynchronizationService status: $((Get-Service FIMSynchronizationService).Status)")
+						break
+					}
 				}
 				
 				#$logger.Trace("$RunStatus")
@@ -367,15 +407,23 @@ function Run-Agent{
 				}
 			}
 			
-			$MaStopTime = [DateTime]::Now
-			$logger.Info("'$maName' '$Profile' run for " + ($MaStopTime-$MaStartTime).TotalSeconds + "s")
+
 					
 			$runhistory = Get-MAStatistics -maGuid $maGuid
+			
+			if($logger.IsTraceEnabled){
+				$logger.Trace((Write-XmlToScreen ($runhistory.lastRunXml)))
+			}
 				
 			#Errors to log
 			$result = $runhistory.lastRunXml.'run-history'.'run-details'.result
+			$newrunnumber = $runhistory.lastRunXml.'run-history'.'run-details'.'run-number'
+			
+			$MaStopTime = [DateTime]::Now
+			$logger.Info("'$Profile' run for $(($MaStopTime-$MaStartTime).TotalSeconds)s run-number: $newrunnumber")
+			
 			if($result -ne "success"){
-				$logger.Error("$Profile on $maName $result")
+				$logger.Error("'$Profile' $result $newrunnumber")
 				switch -wildcard ($result){
 					"stopped-*" { 
 						$logger.Info("Retry run...")
@@ -388,12 +436,16 @@ function Run-Agent{
 		}while($Retry -AND $RetryCount -lt 2)
 		
 		$runnumber = $runhistory.lastRunXml.'run-history'.'run-details'.'run-number'
+		#$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
 		#[xml]$ExecutionHistory = $MMSWebService.GetExecutionHistory(("<execution-history-req ma=`"{0}`"><run-number>{1}</run-number><errors-summary>true</errors-summary></execution-history-req>" -f "{$maGuid}".ToUpper(),$runnumber))
-		[xml]$ExecutionHistory = Get-ExecutionHistory -maGuid $maGuid -runNumber $runnumber -MMSWebService $MMSWebService
+		[xml]$ExecutionHistory = Get-ExecutionHistory -maGuid $maGuid -runNumber $runnumber
 				
 		if($logger.IsTraceEnabled){
 			$logger.Trace((Write-XmlToScreen ($ExecutionHistory.'run-history'.InnerXml)))
 		}
+		
+		$securityid = $ExecutionHistory.'run-history'.'run-details'.'security-id'
+		$logger.Info("'$Profile' run by '$securityid'")
 		
 		foreach($Step in $ExecutionHistory.'run-history'.'run-details'.'step-details'){
 			#Errors info
@@ -437,6 +489,7 @@ function Run-Agent{
 		if($SaveCSChangeData){
 			#$runhistory = Get-MAStatistics -maGuid $maGuid
 			#$runnumber = $runhistory.lastRunXml.'run-history'.'run-details'.'run-number'
+			#$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
 			#[xml]$ExecutionHistory = $MMSWebService.GetExecutionHistory(("<execution-history-req ma=`"{0}`"><run-number>{1}</run-number><errors-summary>true</errors-summary></execution-history-req>" -f "{$maGuid}".ToUpper(),$runnumber))
 			#[xml]$ExecutionHistory = Get-ExecutionHistory -maGuid $maGuid -runNumber $runnumber -MMSWebService $MMSWebService
 			$stepid = $ExecutionHistory.'run-history'.'run-details'.'step-details'.'step-id'
@@ -455,7 +508,7 @@ function Run-Agent{
 				}
 			}
 			
-			$logger.Debug("maName: $maName maGuid: $maGuid run-number: $runnumber step-id: $stepid Node count: " + $Nodes.Count)
+			$logger.Debug("maName: '$maName' maGuid: '$maGuid' run-number: $runnumber step-id: $stepid Node count: " + $Nodes.Count)
 
 			foreach($Node in $Nodes){
 				$logger.Debug("Node - Name: {0} detail: {1} Count: {2}",$Node.Name,$Node.detail,$Node.InnerText)
@@ -572,7 +625,7 @@ function Run-Agent{
 				}
 			}
 		}	
-		$logger.Debug("Run ma '$maName' done")
+		$logger.Debug("Run '$Profile' done")
 	}
 }
 
@@ -590,19 +643,19 @@ function Stop-MA{
 	param
 	(
 		[string]$maName,
-		[Guid]$maGuid,
-		$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
+		[Guid]$maGuid
 	)
 	process{
 		if(-NOT $maGuid){
-			[Guid]$maGuid = Get-maguid -maName $maName -MMSWebService $MMSWebService
-			if(-NOT $maGuid){ Throw "Missing MA '$maName'" }
+			[Guid]$maGuid = Get-maguid -maName $maName
+			if(-NOT $maGuid){ Throw "Stop-MA Missing MA '$maName'" }
 		}
 		if(-NOT $maName){
-			$maName = Get-MAname -maGuid $maGuid -MMSWebService $MMSWebService
-			if(-NOT $maName){ Throw "Missing MA '$maGuid'" }
+			$maName = Get-MAname -maGuid $maGuid
+			if(-NOT $maName){ Throw "Stop-MA Missing MA '$maGuid'" }
 		}
 	
+		$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
 		$Resualt = $MMSWebService.StopMA("{$maGuid}".ToUpper())
 		if(-not [string]::IsNullOrEmpty($Resualt)){
 			Write-Output "$Resualt $maName"
@@ -610,6 +663,3 @@ function Stop-MA{
 		}
 	}
 }
-
-
-

@@ -34,13 +34,11 @@ function Get-MAList{
 	  .EXAMPLE
 	  Get-MAList
 	#>
-  [CmdletBinding()]
-	param(
-		$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
-	)
 	process{
 		$GuidList = $null
 		$NameList = $null
+		
+		$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
 		$MMSWebService.GetMAGuidList([ref]$GuidList,[ref]$NameList)
 		
 		$NameList
@@ -60,9 +58,7 @@ function Get-MAguid{
 	#>
   [CmdletBinding()]
 	param(
-		[Parameter(Mandatory = $true)]
-		[String]$maName,
-		$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
+		[String]$maName
 	)
 	process{
 		#[xml]$MAList = $MMSWebService.GetMAList()
@@ -70,11 +66,22 @@ function Get-MAguid{
 		#[Guid]$Node.guid
 		$GuidList = $null
 		$NameList = $null
+		
+		$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
 		[void]$MMSWebService.GetMAGuidList([ref]$GuidList,[ref]$NameList)
-		$list = $NameList.Tolower()
-		$index = $list.IndexOf($maName.Tolower())
-		if($index -gt -1){
-			[Guid]$GuidList[$index]
+		
+		if($maName){
+			$list = $NameList.Tolower()
+			$index = $list.IndexOf($maName.Tolower())
+			if($index -gt -1){
+				return [Guid]$GuidList[$index]
+			}
+		}else{
+			$list = @{}
+			for($i = 0; $i -lt $GuidList.Count; $i++){
+				$list.Add($NameList[$i],$GuidList[$i])
+			}
+			return $list
 		}
 	}
 }
@@ -93,8 +100,7 @@ function Get-MAname{
   [CmdletBinding()]
 	param(
 		[Parameter(Mandatory = $true)]
-		[Guid]$maGuid,
-		$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
+		[Guid]$maGuid
 	)
 	process{
 		#[xml]$MAList = $MMSWebService.GetMAList()
@@ -103,6 +109,8 @@ function Get-MAname{
 		#[string]$Node.name
 		$GuidList = $null
 		$NameList = $null
+		
+		$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
 		[void]$MMSWebService.GetMAGuidList([ref]$GuidList,[ref]$NameList)
 		$list = $GuidList.ToUpper()
 		$index = $list.IndexOf("{$maGuid}".ToUpper())
@@ -137,26 +145,35 @@ function Get-MAStatistics{
 		[Guid]$maGuid,
 		[switch]$ChangeCounters,
 		[switch]$DeleteCounters,
-		[switch]$RunStatus,
-		$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
+		[switch]$NoDisconnector,
+		[switch]$RunStatus
 	)
 	process{
 		if(-NOT $maGuid){
-			[Guid]$maGuid = Get-maguid -maName $maName -MMSWebService $MMSWebService
+			[Guid]$maGuid = Get-maguid -maName $maName
 			if(-NOT $maGuid){ Throw "Missing MA '$maName'" }
 		}
 
+		$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
 		[Xml]$GetMAState = $MMSWebService.GetMAState("<guids><guid>"+"{$maGuid}".ToUpper()+"</guid></guids>")
+		
 		if($RunStatus){
 			return $GetMAState.'mas-state'.ma.state
 		}
 		
 		$lastRunXml = $null
 		$mvObjectCount = $null
+		
 		[Xml]$MAStatistics = $MMSWebService.GetMAStatistics("{$maGuid}".ToUpper(),[ref]$lastRunXml,[ref]$mvObjectCount)
 		if($ChangeCounters){
 			$stagecount = -1
 			$stagingcounters = $GetMAState.'mas-state'.ma.'run-history'.'run-details'.'step-details'.'staging-counters'
+			if($NoDisconnector){
+				[int]$disconnector = 0
+			}
+			else{
+				[int]$disconnector = $MAStatistics.'total-summary'.'filtered-disconnector'
+			}
 			if($GetMAState.'mas-state'.ma.'run-history'.'run-details'.'step-details'.Count -eq 1){
 			$stagecount = [int]([int]$stagingcounters.'stage-add'.InnerText+
 								[int]$stagingcounters.'stage-update'.InnerText+
@@ -170,7 +187,8 @@ function Get-MAStatistics{
 				totalconnector = [int]$MAStatistics.'total-summary'.'total-connector'
 				importcount = [int]([int]$MAStatistics.'total-summary'.'import-add'+
 								 [int]$MAStatistics.'total-summary'.'import-update'+
-								 [int]$MAStatistics.'total-summary'.'import-delete')-[int]$MAStatistics.'total-summary'.'filtered-disconnector'
+								 [int]$MAStatistics.'total-summary'.'import-delete')-
+								 $disconnector
 				importdelete = [int]$MAStatistics.'total-summary'.'import-delete'
 				exportcount = [int]([int]$MAStatistics.'total-summary'.'export-add'+
 								 [int]$MAStatistics.'total-summary'.'export-update'+
@@ -210,18 +228,13 @@ function Get-AnyMAInProgress{
 	  return true if any MA is running
 	  .EXAMPLE
 	  AnyMAInProgress
-	  .PARAMETER MMSWebService
-	  MMSWebService object
 	#>
-  [CmdletBinding()]
-	param(
-		$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
-	)
 	process{
+		$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
 		$MAList = ([xml]$MMSWebService.GetMAList()).ma_list.ma
 
 		for($i=0;$i -lt $MAList.Length;$i++){
-			$stat = Get-MAStatistics -maGuid ($MAList[$i].guid) -RunStatus -MMSWebService $MMSWebService
+			$stat = Get-MAStatistics -maGuid ($MAList[$i].guid) -RunStatus
 			if($stat -eq "MA_EXEC_STATE_RUNNING")
 			{
 				$MAList[$i].name
@@ -279,8 +292,7 @@ function Get-CSXml{
 		[Parameter(Mandatory = $true)]
 		[Guid[]]$csGuids,
 		[uint64]$CSElementBitMask = [uint64]::MaxValue,
-		[uint64]$CSEntryBitMask = 17,
-		$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
+		[uint64]$CSEntryBitMask = 17
 	)	
 	process{
 		$GuidStringArray = new-object string[] $csGuids.Length
@@ -299,6 +311,7 @@ function Get-CSXml{
 		# 402784264
 
 		#[xml]("<?xml-stylesheet type=`"text/xsl`" href=`"CsExport.xslt`"?>`n" + $MMSWebService.GetCSObjects($GuidStringArray,$GuidStringArray.Length,$CSElementBitMask,$CSEntryBitMask,0,0))
+		$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
 		[xml]$MMSWebService.GetCSObjects($GuidStringArray,$GuidStringArray.Length,$CSElementBitMask,$CSEntryBitMask,0,0)
 	}
 }
@@ -418,8 +431,7 @@ function Get-CSGuid{
 		[String]$maName,
 		[Guid]$maGuid,
 		[Guid[]]$mvGuids,
-		[switch]$GridView,
-		$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
+		[switch]$GridView
 	)
 	process{
 		if(-NOT $maGuid -AND $maName){
@@ -430,6 +442,8 @@ function Get-CSGuid{
 		$DataTable = New-Object system.Data.DataTable "csGuids"
 		$DataTable.Columns.Add("cs-dn")
 		$DataTable.Columns.Add("cs-guid")
+		
+		$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
 		
 		foreach($mvGuid in $mvGuids){
 			[xml]$Connectors = $MMSWebService.GetMVConnectors($mvGuid)
@@ -471,34 +485,40 @@ function Get-SearchMV{
 	  .PARAMETER searchAttrs
 	  Array of search object (Hashtable) most contains  name, value, searchtype, type(data type)
 	  ex. @{name="accountName";value="anase";searchtype="exact";type="string"}
+	  ex. @{name="displayName";searchtype="value-exists";type="string"}
 	  searchtype values: exact, starts, ends, contains, not-contains, value-exists, no-value
 	  type values: string, integer, binary, bit
 	#>
   [CmdletBinding()]
 	param(
-		[Parameter(Mandatory = $true)]
 		[Object[]]$searchAttrs,
-		[string]$objecttype = "person",
-		$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
+		[string]$objecttype = "person"
 	)
 	process{
-		if(-NOT $searchAttrs){
-			Throw "Missing searchAttrs" 
-		}
+
 		
 		$attFilter = ""
 		foreach($searchAttr in $searchAttrs){
-			$attFilter += "<mv-attr name=`""+$searchAttr.Name+"`" type=`""+$searchAttr.type+"`" search-type=`""+$searchAttr.searchtype+"`"><value>"+$searchAttr.value+"</value></mv-attr>"
+			$ValueXml = ""
+			if($searchAttr.value){
+				$ValueXml = "<value>$($searchAttr.value)</value>"
+			}
+			#$attFilter += "<mv-attr name=`""+$searchAttr.Name+"`" type=`""+$searchAttr.type+"`" search-type=`""+$searchAttr.searchtype+"`">$Value</mv-attr>"
+			$attFilter += "<mv-attr name=`"$($searchAttr.Name)`" type=`"$($searchAttr.type)`" search-type=`"$($searchAttr.searchtype)`">$($ValueXml)</mv-attr>"
 			#$attFilter += "<mv-attr name=`"accountName2`" type=`"string`" search-type=`"exact`"><value>value2</value></mv-attr>"
 		}
 		$objectfilter = "<mv-object-type>$objecttype</mv-object-type>"
 		$mvfilter = "<mv-filter collation-order=`"Latin1_General_CI_AS`">{0}{1}</mv-filter>" -f $attFilter,$objectfilter
 		
 		#$mvfilter
+		#InnerXml	"<mv-attr name=\"displayName\" type=\"string\" search-type=\"value-exists\" /><mv-object-type>synchronizationRule</mv-object-type>"	string
+
+		#"<mv-filter collation-order=\"Latin1_General_CI_AS\"><mv-object-type>synchronizationRule</mv-object-type></mv-filter>"
 		#$filter = "<mv-filter collation-order=`"Latin1_General_CI_AS`"><mv-object-type>synchronizationRule</mv-object-type></mv-filter>"
 		#$filter = "<mv-filter collation-order=`"Latin1_General_CI_AS`"><mv-attr name=`"accountName`" type=`"string`" search-type=`"exact`"><value>value</value></mv-attr><mv-object-type>person</mv-object-type></mv-filter>"
 		#$filter = "<mv-filter collation-order=`"Latin1_General_CI_AS`"><mv-attr name=`"accountName`" type=`"string`" search-type=`"exact`"><value>value</value></mv-attr><mv-attr name=`"accountName2`" type=`"string2`" search-type=`"exact`"><value>value2</value></mv-attr><mv-object-type>person</mv-object-type></mv-filter>"
-		
+		#$MMSWebService.SearchMV("<mv-filter collation-order=`"Latin1_General_CI_AS`"><mv-object-type>synchronizationRule</mv-object-type></mv-filter>")
+		$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
 		[xml]$SearchMVXml = "<mv-objects>" + ($MMSWebService.SearchMV($mvfilter)).Replace("<mv-objects>","").Replace("</mv-objects>","") + "</mv-objects>"
 		
 		#[xml]$Connectors = $MMSWebService.GetMVConnectors("MVGuid")
@@ -527,13 +547,12 @@ function Get-ExecutionHistory{
 		[string]$maName,
 		[guid]$maGuid,
 		[Parameter(Mandatory = $true)]
-		[int]$runNumber,
-		$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
+		[int]$runNumber
 	)	
 	process{
 		#Get MA guid
 		if(-NOT $maGuid){
-			[Guid]$maGuid = Get-MAguid -maName $maName -MMSWebService $MMSWebService
+			[Guid]$maGuid = Get-MAguid -maName $maName
 			if(-NOT $maGuid){
 				$logger.Error("Missing MA '$maName'")
 				Throw "Missing MA '$maName'"
@@ -541,6 +560,7 @@ function Get-ExecutionHistory{
 			}
 		}
 		
+		$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
 		[xml]$MMSWebService.GetExecutionHistory(("<execution-history-req ma=`"{0}`"><run-number>{1}</run-number><errors-summary>true</errors-summary></execution-history-req>" -f "{$maGuid}".ToUpper(),$runNumber))
 	}
 }
@@ -566,10 +586,10 @@ function Get-StepObjects{
 		[guid]$stepId,
 		[Parameter(Mandatory = $true)]
 		[string]$statisticsType,
-		[int]$PageSize = 1000,
-		$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
+		[int]$PageSize = 1000
 	)	
 	process{
+		$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
 		$tokenGuid = $MMSWebService.ExecuteStepObjectDetailsSearch(("<step-object-details-filter step-id='{0}'><statistics type='{1}' /></step-object-details-filter>" -f"{$stepId}".ToUpper(), $statisticsType))
 		
 		$csobjects = New-Object System.Collections.ArrayList
@@ -598,9 +618,10 @@ function Run-PurgeExecHistory{
 	#>
 	param
 	(
-		[int]$DaysBack,
-		$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
+		[int]$DaysBack
 	)
+	
+	$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
 	$MMSWebService.PurgeExecHistory([datetime]::Now.AddDays(-$DaysBack).ToUniversalTime().ToShortDateString())
 }
 
@@ -632,13 +653,17 @@ function Run-Preview{
 		[Parameter(Mandatory = $true)]
 		[Guid[]]$csGuids,
 		[switch]$delta,
-		[switch]$commit,
-		$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
+		[switch]$commit
 	)
 	process{
+		#foreach($mv in $mvs.'mv-objects'.'mv-object'){
+		#	$index = [array]::IndexOf($mv.'cs-mv-links'.'cs-mv-value'.'ma-name',"AD-MA")
+		#	Run-Preview -maName "AD-MA" -csGuids $mv.'cs-mv-links'.'cs-mv-value'[$index].'cs-guid' -commit
+		#}
+		$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
 		
 		if(-NOT $maGuid){
-			[Guid]$maGuid = Get-maguid -maName $maName -MMSWebService $MMSWebService
+			[Guid]$maGuid = Get-maguid -maName $maName
 			if(-NOT $maGuid){ Throw "Missing MA '$maName'" }
 		}
 		$XMLString = New-Object System.Text.StringBuilder
@@ -651,20 +676,20 @@ function Run-Preview{
 			#[void]$XMLString.Append($MMSWebService.Preview("{$maGuid}".ToUpper(),"{$csGuid}".ToUpper(),$delta,$commit))
 			[xml]$Preview = $MMSWebService.Preview("{$maGuid}".ToUpper(),"{$csGuid}".ToUpper(),$delta,$commit)
 			if($Preview.InnerXml.Length -eq 0){
-				[void]$ErrorString.Append("Not preview data return for $csGuid")
+				[void]$ErrorString.Append("<Error>Not preview data return for $csGuid</Error>")
 			}
 			else{
 				if($Preview.preview.error -ne $null){
-					[void]$ErrorString.Append("Error $csGuid `n" + $Preview.preview.error.InnerXml)
+					[void]$ErrorString.Append("<Error>Error $csGuid `n $($Preview.preview.error.InnerXml)</Error>")
 				}
 				[void]$XMLString.Append($Preview.InnerXml)
 			}
 			$PrCount++
 			Write-Progress -Activity "Run Preview" -Status "Preview done for $csGuid" -PercentComplete ($PrCount/$csGuids.Length*100)
 		}
-		[void]$XMLString.Append("</Previews>")
+		[void]$XMLString.Append("<Errors>$($ErrorString.ToString())</Errors></Previews>")
+
 		[xml]$XMLString.ToString()
-		$ErrorString
 	}
 }
 
@@ -692,14 +717,15 @@ function Disconnect-CSobject{
 		[String]$maName,
 		[Guid]$maGuid,
 		[Parameter(Mandatory = $true)]
-		[Guid[]]$csGuids,
-		$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
+		[Guid[]]$csGuids	
 	)
 	process{
 		if(-NOT $maGuid){
-			[Guid]$maGuid = Get-maguid -maName $maName -MMSWebService $MMSWebService
+			[Guid]$maGuid = Get-maguid -maName $maName
 			if(-NOT $maGuid){ Throw "Missing MA '$maName'" }
 		}
+		
+		$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
 		foreach($cs in  $csGuids){
 			$string = $MMSWebService.Disconnect("{$maGuid}".ToUpper(),"{$cs}".ToUpper())
 			if($string.Length -ne 0){
@@ -741,14 +767,15 @@ function Join-CS-MV{
 		[Guid]$csGuid,
 		[Parameter(Mandatory = $true)]
 		[Guid]$mvGuid,
-		[String]$mvObjectType = "person",
-		$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
+		[String]$mvObjectType = "person"
 	)
 	process{
 		if(-NOT $maGuid){
-			[Guid]$maGuid = Get-maguid -maName $maName -MMSWebService $MMSWebService
+			[Guid]$maGuid = Get-maguid -maName $maName
 			if(-NOT $maGuid){ Throw "Missing MA '$maName'" }
 		}
+		
+		$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
 		$string = $MMSWebService.Join("{$maGuid}".ToUpper(),"{$csGuid}".ToUpper(),$mvObjectType,"{$mvGuid}".ToUpper())
 		if($string.Length -ne 0){
 			$string += "`n maGuid: $maGuid`n csGuid: $csGuid`n mvObjectType: $mvObjectType`n mvGuid: $mvGuid"
@@ -788,14 +815,15 @@ function Set-ConnectorState{
 		[Guid]$mvGuid,
 		[Parameter(Mandatory = $true)]
 		[ValidateSet("CONNECTORSTATE_EXPLICIT","CONNECTORSTATE_NORMAL","CONNECTORSTATE_STAY")]
-		[String]$ConnectorState = "CONNECTORSTATE_NORMAL",
-		$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
+		[String]$ConnectorState = "CONNECTORSTATE_NORMAL"
 	)
 	process{
 		if(-NOT $maGuid){
-			[Guid]$maGuid = Get-maguid -maName $maName -MMSWebService $MMSWebService
+			[Guid]$maGuid = Get-maguid -maName $maName
 			if(-NOT $maGuid){ Throw "Missing MA '$maName'" }
 		}
+		
+		$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
 		foreach($csGuid in $csGuids){
 			$string = $MMSWebService.SetConnectorState("{$maGuid}".ToUpper(),"{$csGuid}".ToUpper(),$ConnectorState)
 			if($string.Length -ne 0){
@@ -816,24 +844,12 @@ function Refresch-synchronizationRule{
 	  .EXAMPLE
 	  Refresch-synchronizationRule
 	  .EXAMPLE
-	  Refresch-synchronizationRule -ServiceAgentName "MIMService-MA"
-	  .PARAMETER ServiceAgentName
-	  Name of service agent def. is FIMService
+	  Refresch-synchronizationRule
 	#>
-	param(
-		[String]$ServiceAgentName = "FIMService"
-	)
 	process{
-		$synchronizationRuleCSGuids = Get-CSGuid -maName $ServiceAgentName -MVSQLWhereQuery "cs.object_type = 'synchronizationRule'"
-		#Get precedence?
-		
-		#Disconnect-CS -maName "MIMService-MA" -csGuid $synchronizationRuleCSGuids
-		#First may fail?
-		$previewRun = Run-Preview -maName "MIMService-MA" -csGuid $synchronizationRuleCSGuids[0] -commit
-		#$previewRun.Previews.preview.error
-		Run-Preview -maName "MIMService-MA" -csGuid $synchronizationRuleCSGuids -commit
-		
-		#set precedence
+
+		$MVsynchronizationRules = Get-SearchMV -objecttype "synchronizationRule"
+		Run-Preview -maGuid $MVsynchronizationRules.'mv-objects'.'mv-object'[0].'cs-mv-links'.'cs-mv-value'.'ma-guid' -commit -csGuid ($MVsynchronizationRules.'mv-objects'.'mv-object'.'cs-mv-links'.'cs-mv-value'.'cs-guid')
 	}
 }
 
@@ -851,11 +867,22 @@ function Update-MaSchema{
 	#>
   [CmdletBinding()]
 	param(
-		[xml]$mvdata,
-		$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
+		[xml]$mvdata
 		)
 	process{
 		if($mvdata -ne $null){
+			
+			$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
+			$Oldmvdata = [xml]$MMSWebService.GetMVData(511)
+			$CurrentVersion = $Oldmvdata.'mv-data'.version 
+			$NewSchemaVersion = $mvdata.'mv-data'.version
+			
+			if($CurrentVersion -ne $NewSchemaVersion ){
+				Write-Error "New schema xml version $NewSchemaVersion is not eq current version $CurrentVersion`nPlease update xml data to lates version!"
+				#Write-Error ""
+				return
+			}
+		
 			$return = $MMSWebService.ModifyMVData($mvdata.InnerXml)
 			if($return.Length > 0){
 				Write-Error $return
@@ -897,10 +924,10 @@ function Add-AttributeToClass{
 	param(
 		[xml]$mvdata,
 		[String]$classname,
-		[switch]$requiredInClass,
 		[String]$attributename,
 		[ValidateSet("Reference","String","Binary","Bit","Integer")]
 		[String]$syntax,
+		[switch]$requiredInClass,
 		[switch]$singlevalue,
 		[switch]$indexable	
 		)
@@ -931,6 +958,11 @@ function Add-AttributeToClass{
 		
 		#Add if not exist to attribute-type
 		if($mvdata.DocumentElement.SelectSingleNode("//dsml:dsml/dsml:directory-schema/dsml:attribute-type[@id='$attributename']", $ns) -eq $null){
+		
+			if(-NOT $syntax){
+				Write-Error "Syntax value missing"
+				return
+			}
 		
 			$attributeElement = $mvdata.CreateElement("dsml:attribute-type", "http://www.dsml.org/DSML")
 			$attributeElement.SetAttribute("id", $attributename)
@@ -1002,12 +1034,159 @@ function Add-AttributesToClass{
 			$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
 			$mvdata = [xml]$MMSWebService.GetMVData(511)
 		}
-	
+		
 		foreach($attribute in $attributes){
 			#$attribute
-			$mvdata = Add-AttributeToClass -mvdata $mvdata -classname $classname -requiredInClass:$attribute.requiredInClass -attributename $attribute.attributename -syntax $attribute.syntax -singlevalue:$attribute.singlevalue -indexable:$attribute.indexable
+			#$mvdata = Add-AttributeToClass -mvdata $mvdata -classname $classname -requiredInClass:$attribute.requiredInClass -attributename $attribute.attributename -syntax $attribute.syntax -singlevalue:$attribute.singlevalue -indexable:$attribute.indexable
+			$AttributeArgs = @{}
+			$AttributeArgs.Add("mvdata",$mvdata)
+			$AttributeArgs.Add("classname",$classname)
+			foreach($attributevalue in $attribute){
+				$AttributeArgs.Add($attributevalue.Name,$attributevalue.Value)
+			}
+			$mvdata = Add-AttributeToClass @AttributeArgs
+			
 		}
 		return $mvdata
+	}
+}
+
+function get-MIMSyncBackup{
+	<#
+	  .SYNOPSIS
+	  Copy schema, MA config and Extensions directory to zip yyyyMMdd
+	  .DESCRIPTION
+	  Add attributes to class
+	  .EXAMPLE
+	  get-MIMSyncBackup "C:\backup\"
+	  .PARAMETER DestPath
+	  Destination path
+	#>
+  [CmdletBinding()]
+	param(
+		[String]$DestPath,
+		[switch]$EncryptionkeysExport
+	)
+	process{
+		$tempPath = $env:TEMP + "\$([datetime]::Now.ToString("yyyyMMdd"))"
+		mkdir $tempPath 
+		
+		#Set-Alias svrexport "$FIM\Synchronization Service\Bin\svrexport.exe"
+		
+		$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
+		
+		#key export
+		if($EncryptionkeysExport){
+			$par = Get-MIMParameters
+			#Set-Alias miiskmu "$($par.Path)\Bin\miiskmu.exe"
+			#miiskmu /q /e $DirDate\Encryption_keys\keyback.bin /u:$user $password
+			#miiskmu /e "$tempPath\Encryption_keys.bin" /u:$user $password
+
+			$StartName = (Get-WmiObject win32_service|?{$_.name -eq "FIMSynchronizationService"}).StartName
+			write-host "Enter password for '$StartName'"
+			$password = Read-Host
+			Start-Process "$($par.Path)\Bin\miiskmu.exe" -Args "/e $tempPath\Encryption_keys.bin","/u:$StartName $password" -Verb runas -Wait
+		}
+		
+		#511
+		$MVXMLdata = [xml]$MMSWebService.GetMVData(511)
+		"<export-mv-schema server='{0}' export-date='{1}'>{2}</export-mv-schema>" -f $env:computername, [datetime]::Now.ToString("s"), $MVXMLdata.'mv-data'.schema.InnerXml | Out-File -Encoding utf8 (join-path $tempPath ("mv-schema.xml"))
+
+		#MA Data
+		$maGuid = $null
+		$maName = $null
+		[void]$MMSWebService.GetMAGuidList([ref] $maGuid,[ref] $maName)
+		
+		#Set-Alias maexport "$FIM\Synchronization Service\Bin\maexport.exe"
+		
+		for($i=0;$i -lt $maGuid.Count;$i++){
+			write-progress -id 1 -activity "Management Agent" -status ($maName[$i]) -percentComplete ($i/$maGuid.Count*100)
+			
+			#maexport $maName[$i] (join-path $tempPath ($maName[$i]+".xml"))
+			
+			$MAXmldata = [xml]$MMSWebService.ExportManagementAgent($maName[$i],$false,$true,[datetime]::Now.ToString("s"))
+			$MAXmldata.Save((join-path $tempPath ($maName[$i]+".xml")))
+		}
+		
+		#Extensions copy dlls
+		$ExtensionsPath = get-MIMParameters | ? { ($_.Path -ne $null) } | % { $_.Path + "Extensions" }
+		Add-Type -Assembly System.IO.Compression.FileSystem
+		$compressionLevel = [System.IO.Compression.CompressionLevel]::Optimal
+		[System.IO.Compression.ZipFile]::CreateFromDirectory($ExtensionsPath,($tempPath+"\Extensions.zip"), $compressionLevel, $false)
+		
+		[System.IO.Compression.ZipFile]::CreateFromDirectory($tempPath,($DestPath + "\$([datetime]::Now.ToString("yyyyMMdd")).zip"), $compressionLevel, $false)
+		rm $tempPath -Recurse
+	}
+}
+
+function Get-MIMAdminGroups{
+	
+	begin{		
+
+		$MIMParameters = Get-MIMParameters
+		if(-NOT $InitialCatalog){
+			$InitialCatalog = $MIMParameters.DBName
+		}
+		
+		if(-NOT $SQLServerInstans){
+			$SQLServerInstans = $MIMParameters.SQLServerInstans
+		}
+		
+		
+		$ConnectionString = "Data Source=$SQLServerInstans;Initial Catalog=$InitialCatalog;Integrated Security=SSPI;"
+		$Connection = New-Object System.Data.SqlClient.SqlConnection ($ConnectionString)
+		$Connection.Open()
+		
+		$AdminGroups = @("administrators_sid","operators_sid","account_joiners_sid","browse_sid","passwordset_sid")
+
+	}
+	
+	process{
+		$sqlcommand  = "SELECT {0} FROM mms_server_configuration (nolock)" -f ($AdminGroups -join ",")
+
+		$SqlCmd = New-Object System.Data.SqlClient.SqlCommand($sqlcommand,$Connection)
+		$SqlCmd.CommandTimeout = $Connection.ConnectionTimeout
+
+		$DataTable = New-Object system.Data.DataTable "Configsid"
+		$Adapter = New-Object System.Data.SqlClient.SqlDataAdapter $SqlCmd
+		$RowCount = $Adapter.Fill($DataTable)
+		
+		$Adapter.Dispose()
+		$SqlCmd.Dispose()
+		
+		foreach($groupname in $AdminGroups){
+			$sid = New-Object System.Security.Principal.SecurityIdentifier -ArgumentList ($DataTable.Rows[0].($groupname)),0
+			$AccountName = $sid.Translate([System.Security.Principal.NTAccount])
+			@($AccountName,$groupname,($sid.ToString()))
+		}
+	}
+	end{
+		$Connection.Close()
+	}
+}
+
+function Get-FIMServiceHosturl{
+	begin{
+		$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
+		
+		$maGuid = $null
+		$maName = $null
+		[void]$MMSWebService.GetMAGuidList([ref] $maGuid,[ref] $maName)
+	}
+	process{
+		$serviceHost = ""
+		for($i=0;$i -lt $maGuid.Count;$i++){
+			$MAXmldata = [xml]$MMSWebService.GetMaData($maGuid[$i],[uint32]::MaxValue,[uint32]::MaxValue,[uint32]::MaxValue)
+			$MAdata = $MAXmldata.'ma-data'
+			
+			if($MAdata.category -eq "FIM"){
+				$serviceHost = $MAdata.'private-configuration'.'fimma-configuration'.'connection-info'.serviceHost
+				break
+			}
+		}
+	}
+	end{
+		$serviceHost
 	}
 }
 

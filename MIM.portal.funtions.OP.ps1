@@ -566,7 +566,7 @@ function add-Admin{
 				
 				$ImportObject | Import-FIMConfig
 			}else{
-				out-host "User exist in Administrators"
+				Write-Host -BackgroundColor Black -ForegroundColor Yellow "User exist in Administrators"
 			}
 		}
 	}
@@ -608,10 +608,10 @@ function new-GroupByCreteria{
 	  .DESCRIPTION
 	  Create new security or distribution group in MIM portal
 	  .EXAMPLE
-	  new-GroupByCreteria -AccountName Security1 -OwnerAccountName anase -Type Security
+	  new-GroupByCreteria -AccountName Security1 -OwnerAccountName andase -Type Security
 	  .EXAMPLE
-	  new-GroupByCreteria -AccountName Security1 -OwnerAccountName anase -Type Security -Domain ATEA -Scope Global -Filter "/Person[(starts-with(AccountName,'A'))]" 
-	  new-GroupByCreteria -AccountName Security1 -OwnerAccountName anase -Type Security -Domain ATEA -Scope Global -Filter "/Person[GroupList-index = 'a']" 
+	  new-GroupByCreteria -AccountName Security1 -OwnerAccountName andase -Type Security -Domain domnain -Scope Global -Filter "/Person[(starts-with(AccountName,'A'))]" 
+	  new-GroupByCreteria -AccountName Security1 -OwnerAccountName andase -Type Security -Domain domnain -Scope Global -Filter "/Person[GroupList-index = 'a']" 
 	  .PARAMETER AccountName
 	  AccountName of group (MailNickname for distribution group)
 	  .PARAMETER OwnerAccountName
@@ -793,7 +793,7 @@ xmlns="http://schemas.xmlsoap.org/ws/2004/09/enumeration">{0}</Filter>
 	}
 }
 
-function get-PostProcessingCount{
+function new-NewGroupByCreteria{
 	<#
 	  .SYNOPSIS
 	  Get count of Post Processing Request from MIM portal
@@ -802,11 +802,36 @@ function get-PostProcessingCount{
 	  .EXAMPLE
 	  get-PostProcessingCount
 	#>
+	param(
+		[parameter(Mandatory=$true)]
+		[String]$AccountName,
+		
+		[parameter(Mandatory=$true)]
+		[String]$DisplayName,
+		
+		[parameter(Mandatory=$true)]
+		[String]$Filter,
+		
+		[String]$Domain,
+		
+		[ValidateSet("None","Custom","Owner Approval")]
+		[String]$MembershipAddWorkflow = "None",
+		
+		[bool]$MembershipLocked = $True,
+		
+		[ValidateSet("DomainLocal","Global","Universal")]
+		$Scope = "Universal",
+		
+		[parameter(Mandatory=$true)]
+		[Guid]$Owner,
+		
+		[switch]$Commit
+	)
 	begin{		
 		if(-NOT (Test-Path (join-path ($PSScriptRoot) Lithnet.ResourceManagement.Client.dll)))
 		{
-			$FileName = "1.0.6993.23628"
-			Invoke-WebRequest "https://www.nuget.org/api/v2/package/Lithnet.ResourceManagement.Client/$FileName" -OutFile $FileName
+			$FileName = "Lithnet.nuget.zip"
+			Invoke-WebRequest "https://www.nuget.org/api/v2/package/Lithnet.ResourceManagement.Client/" -OutFile $FileName
 			Add-Type -AssemblyName System.IO.Compression.FileSystem
 			$zip = [System.IO.Compression.ZipFile]::OpenRead((join-path ($PSScriptRoot) $FileName))
 			$zip.Entries|?{$_.FullName.StartsWith("lib/net40/")}|%{[System.IO.Compression.ZipFileExtensions]::ExtractToFile($_, (join-path ($PSScriptRoot) $_.Name), $true)}
@@ -816,10 +841,132 @@ function get-PostProcessingCount{
 
 		Add-Type -Path (join-path ($PSScriptRoot) Lithnet.ResourceManagement.Client.dll)
 		$client = new-object Lithnet.ResourceManagement.Client.ResourceManagementClient
+		
+		$FilterXml = "<Filter xmlns:xsd=`"http://www.w3.org/2001/XMLSchema`" xmlns:xsi=`"http://www.w3.org/2001/XMLSchema-instance`" Dialect=`"http://schemas.microsoft.com/2006/11/XPathFilterDialect`" xmlns=`"http://schemas.xmlsoap.org/ws/2004/09/enumeration`">{0}</Filter>"
 	}
 	
 	process{
-		$Request = $client.GetResources("/Request[RequestStatus = 'PostProcessing']")
+
+		$Group = $client.CreateResource("Group")
+		$Group.Attributes["AccountName"].Value = $AccountName
+		$Group.Attributes["DisplayName"].Value = $DisplayName
+		$Group.Attributes["Filter"].Value = $FilterXml -f $Filter
+
+		$Group.Attributes["Domain"].Value = $Domain
+		$Group.Attributes["MembershipAddWorkflow"].Value = $MembershipAddWorkflow
+		$Group.Attributes["MembershipLocked"].Value = $MembershipLocked
+		$Group.Attributes["Scope"].Value = $Scope
+		$Group.Attributes["Type"].Value = $Type
+
+		$Group.Attributes["Owner"].Value = $owner
+		$Group.Attributes["DisplayedOwner"].Value = $owner
+		
+		if($Commit){ $Group.Save() }else{ $Group }
+
+	}
+}
+
+function get-PostProcessingCount{
+	<#
+	  .SYNOPSIS
+	  Get count of Post Processing Request from MIM portal
+	  .DESCRIPTION
+	  Get count of Post Processing Request from MIM portal
+	  .EXAMPLE
+	  get-PostProcessingCount
+	#>
+	param(
+		[DateTime]$Date = [datetime]::Now.AddDays(-1),
+		[String]$Address,
+		[switch]$DetectAddress
+		
+	)
+	begin{		
+		if(-NOT (Test-Path (join-path ($PSScriptRoot) Lithnet.ResourceManagement.Client.dll)))
+		{
+			$FileName = "Lithnet.nuget.zip"
+			Invoke-WebRequest "https://www.nuget.org/api/v2/package/Lithnet.ResourceManagement.Client/" -OutFile $FileName
+			Add-Type -AssemblyName System.IO.Compression.FileSystem
+			$zip = [System.IO.Compression.ZipFile]::OpenRead((join-path ($PSScriptRoot) $FileName))
+			$zip.Entries|?{$_.FullName.StartsWith("lib/net40/")}|%{[System.IO.Compression.ZipFileExtensions]::ExtractToFile($_, (join-path ($PSScriptRoot) $_.Name), $true)}
+			$zip.Dispose()
+			rm $FileName
+		}
+
+		Add-Type -Path (join-path ($PSScriptRoot) Lithnet.ResourceManagement.Client.dll)
+		#$client = new-object Lithnet.ResourceManagement.Client.ResourceManagementClient
+		
+		if($DetectAddress){
+			if(-NOT $Global:DetectedAddress){
+				. (join-path (PWD) "MIM.syncservice.funtions.OP.ps1")
+				$Global:DetectedAddress = Get-FIMServiceHosturl
+			}
+			$Address = $Global:DetectedAddress
+		}
+
+		if($Address){ $client = new-object Lithnet.ResourceManagement.Client.ResourceManagementClient $Address }else{ $client = new-object Lithnet.ResourceManagement.Client.ResourceManagementClient }
+	}
+	
+	process{
+		#$Request = $client.GetResources("/Request[RequestStatus = 'PostProcessing']")
+		#$Request = $client.GetResources("/Request[RequestStatus = 'PostProcessing' or RequestStatus = 'Validating' or RequestStatus = 'Committed']")
+		#$Request = $client.GetResources("/Request[(CreatedTime > op:subtract-dayTimeDuration-from-dateTime(fn:current-dateTime(), xs:dayTimeDuration('P1D'))) and ((RequestStatus = 'Validating') or (RequestStatus = 'PostProcessing') or (RequestStatus = 'Committed'))]")
+		$DateString = $Date.ToUniversalTime().ToString("s")
+		$Request = $client.GetResources("/Request[(CreatedTime > '$DateString') and ((RequestStatus = 'Validating') or (RequestStatus = 'PostProcessing') or (RequestStatus = 'Committed'))]")
 		$Request.Count
+	}
+}
+
+function start-SQLJob{
+	<#
+	  .SYNOPSIS
+	  Start sql job
+	  .DESCRIPTION
+	  Start sql job by using Microsoft.SqlServer.SMO, need SQLAgentUserRole SQLAgentReaderRole SQLAgentOperatorRole permissions for msdb db
+	  .EXAMPLE
+	  start-SQLJob -ServerName "sql.server.namn" -JobName "sql job name" -StepName "step1"
+	  .EXAMPLE
+	  start-SQLJob -ServerName "SQL01.adm.namn.se" -JobName "FIM_TemporalEventsJob" -StepName "step1"
+	#>
+	param 
+	( 
+		[string]$ServerName,
+		[string]$JobName,
+		[string]$StepName,
+		[switch]$DontWait
+	)
+
+	begin{	
+		[void][System.Reflection.Assembly]::LoadWithPartialName('Microsoft.SqlServer.SMO')
+	}
+	
+	process{
+		try{
+			$srv = New-Object Microsoft.SqlServer.Management.SMO.Server($ServerName)
+			$job = $srv.jobserver.jobs[$JobName] 
+			$step = $job.JobSteps[$StepName]
+			
+			$job.Start()
+
+			if($DontWait){ 
+				sleep 2
+				$job.Refresh()
+				return $job.CurrentRunStatus
+			}else{
+
+				do 
+				{ 
+					sleep 5
+					$job.Refresh()
+					
+				}while($job.CurrentRunStatus.ToString() -ne "Idle")
+				
+				return $job.LastRunOutcome
+			}
+			
+			return $job.LastRunOutcome
+		}Catch{
+			return $_
+		}
 	}
 }
