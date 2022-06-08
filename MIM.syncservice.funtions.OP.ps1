@@ -39,7 +39,7 @@ function Get-MAList{
 		$NameList = $null
 		
 		$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
-		$MMSWebService.GetMAGuidList([ref]$GuidList,[ref]$NameList)
+		[void]$MMSWebService.GetMAGuidList([ref]$GuidList,[ref]$NameList)
 		
 		$NameList
 	}
@@ -58,6 +58,8 @@ function Get-MAguid{
 	#>
   [CmdletBinding()]
 	param(
+		[parameter(Mandatory=$true)]
+		[ArgumentCompleter({ Get-MAList })]
 		[String]$maName
 	)
 	process{
@@ -141,6 +143,7 @@ function Get-MAStatistics{
 	#>
   [CmdletBinding()]
 	param(
+		[ArgumentCompleter({ Get-MAList })]
 		[String]$maName,
 		[Guid]$maGuid,
 		[switch]$ChangeCounters,
@@ -149,10 +152,8 @@ function Get-MAStatistics{
 		[switch]$RunStatus
 	)
 	process{
-		if(-NOT $maGuid){
-			[Guid]$maGuid = Get-maguid -maName $maName
-			if(-NOT $maGuid){ Throw "Missing MA '$maName'" }
-		}
+		if(!$maGuid){ [Guid]$maGuid = Get-maguid -maName $maName }
+		if(-NOT $maGuid){ Throw "Missing MA '$maName'" }
 
 		$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
 		[Xml]$GetMAState = $MMSWebService.GetMAState("<guids><guid>"+"{$maGuid}".ToUpper()+"</guid></guids>")
@@ -165,49 +166,67 @@ function Get-MAStatistics{
 		$mvObjectCount = $null
 		
 		[Xml]$MAStatistics = $MMSWebService.GetMAStatistics("{$maGuid}".ToUpper(),[ref]$lastRunXml,[ref]$mvObjectCount)
-		if($ChangeCounters){
-			$stagecount = -1
-			$stagingcounters = $GetMAState.'mas-state'.ma.'run-history'.'run-details'.'step-details'.'staging-counters'
-			if($NoDisconnector){
-				[int]$disconnector = 0
-			}
-			else{
-				[int]$disconnector = $MAStatistics.'total-summary'.'filtered-disconnector'
-			}
-			if($GetMAState.'mas-state'.ma.'run-history'.'run-details'.'step-details'.Count -eq 1){
-			$stagecount = [int]([int]$stagingcounters.'stage-add'.InnerText+
-								[int]$stagingcounters.'stage-update'.InnerText+
-								[int]$stagingcounters.'stage-rename'.InnerText+
-								[int]$stagingcounters.'stage-delete'.InnerText+
-								[int]$stagingcounters.'stage-delete-add'.InnerText)
-			}
+		
+		if($NoDisconnector){
+			$disconnector = 0
+		}
+		else{
+			$disconnector = [int]$MAStatistics.'total-summary'.'filtered-disconnector'
+		}
+		
+		$all = [int]$MAStatistics.'total-summary'.'all'
+		$totalconnector = [int]$MAStatistics.'total-summary'.'total-connector'
+		
+		$stagecount = -1
+		$stagingcounters = $GetMAState.'mas-state'.ma.'run-history'.'run-details'.'step-details'.'staging-counters'
+		if($stagingcounters){
+			$stagingcounters.'stage-add' | %{ $stageadd += [int]$_.innertext }
+			$stagingcounters.'stage-update' | %{ $stageupdate += [int]$_.innertext }
+			$stagingcounters.'stage-rename' | %{ $stagerename += [int]$_.innertext }
+			$stagingcounters.'stage-delete' | %{ $stagedelete += [int]$_.innertext }
+			$stagingcounters.'stage-delete-add' | %{ $stagedeleteadd += [int]$_.innertext }
+			$stagecount = $stageadd + $stageupdate + $stagerename + $stagedelete + $stagedeleteadd
+		}
+
+		$importadd = [int]$MAStatistics.'total-summary'.'import-add'
+		$importupdate = [int]$MAStatistics.'total-summary'.'import-update'
+		$importdelete = [int]$MAStatistics.'total-summary'.'import-delete'
+		$importcount = $importadd + $importupdate + $importdelete - $disconnector
+							 
+		$exportadd = [int]$MAStatistics.'total-summary'.'export-add'
+		$exportupdate = [int]$MAStatistics.'total-summary'.'export-update'
+		$exportdelete = [int]$MAStatistics.'total-summary'.'export-delete'
+		$exportcount = $exportadd + $exportupdate + $exportdelete 
+		
+		if($ChangeCounters){	
 			return @{
+				all = $all
+				totalconnector = $totalconnector
+				
+				importadd = $importadd
+				importupdate = $importupdate
+				importdelete = $importdelete
+				importcount = $importcount
+				
+				exportadd = $exportadd
+				exportupdate = $exportupdate
+				exportdelete = $exportdelete
+				exportcount = $exportcount 
+				
+				stageadd = $stageadd
+				stageupdate = $stageupdate
+				stagerename = $stagerename
+				stagedelete = $stagedelete
+				stagedeleteadd = $stagedeleteadd
 				stagecount = $stagecount
-				all = [int]$MAStatistics.'total-summary'.'all'
-				totalconnector = [int]$MAStatistics.'total-summary'.'total-connector'
-				importcount = [int]([int]$MAStatistics.'total-summary'.'import-add'+
-								 [int]$MAStatistics.'total-summary'.'import-update'+
-								 [int]$MAStatistics.'total-summary'.'import-delete')-
-								 $disconnector
-				importdelete = [int]$MAStatistics.'total-summary'.'import-delete'
-				exportcount = [int]([int]$MAStatistics.'total-summary'.'export-add'+
-								 [int]$MAStatistics.'total-summary'.'export-update'+
-								 [int]$MAStatistics.'total-summary'.'export-delete') 
-				exportdelete = [int]$MAStatistics.'total-summary'.'export-delete'
 			}
 		}
 		
 		if($DeleteCounters){
-			$stagecount = -1
-			$stagingcounters = $GetMAState.'mas-state'.ma.'run-history'.'run-details'.'step-details'.'staging-counters'
-			if($GetMAState.'mas-state'.ma.'run-history'.'run-details'.'step-details'.Count -eq 1){
-			$stagecount = [int]([int]$stagingcounters.'stage-delete'.InnerText+
-								[int]$stagingcounters.'stage-delete-add'.InnerText)
-			}
 			return @{
 				stagecountdelete = $stagecount
-				importdelete = [int]([int]$MAStatistics.'total-summary'.'import-delete')
-				exportdelete = [int]([int]$MAStatistics.'total-summary'.'export-delete') 
+				importdelete = $importdelete
+				exportdelete = $exportdelete
 			}
 		}
 		
@@ -229,19 +248,28 @@ function Get-AnyMAInProgress{
 	  .EXAMPLE
 	  AnyMAInProgress
 	#>
+	[CmdletBinding()]
+	param(
+		[switch]$List
+	)
 	process{
 		$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
 		$MAList = ([xml]$MMSWebService.GetMAList()).ma_list.ma
+		
+		$ReturnValue = $false
 
 		for($i=0;$i -lt $MAList.Length;$i++){
 			$stat = Get-MAStatistics -maGuid ($MAList[$i].guid) -RunStatus
 			if($stat -eq "MA_EXEC_STATE_RUNNING")
 			{
-				$MAList[$i].name
-				return $true
+				if($List){
+					$MAList[$i].name
+				}
+				$ReturnValue = $true
+				break
 			}
 		}
-		return $false
+		return $ReturnValue
 	}
 }
 
@@ -337,6 +365,7 @@ function Get-CSGuidBySQL{
 	#>
   [CmdletBinding()]
 	param(
+		[ArgumentCompleter({ Get-MAList })]
 		[String]$maName,
 		[Guid]$maGuid,
 		[String]$InitialCatalog,
@@ -363,10 +392,8 @@ function Get-CSGuidBySQL{
 	}
 	
 	process{
-		if(-NOT $maGuid -AND $maName){
-			$maGuid = Get-maguid -maName $maName
-			if(-NOT $maGuid){ Throw "Missing MA '$maName'" }
-		}
+		if(!$maGuid){ [Guid]$maGuid = Get-maguid -maName $maName }
+		if(-NOT $maGuid){ Throw "Missing MA '$maName'" }
 	
 		$sqlcommand  = "SELECT DISTINCT cs.rdn,ma.ma_name,cs.object_id FROM mms_csmv_link csmv (nolock) "
 		$sqlcommand += "join mms_connectorspace cs (nolock) on csmv.cs_object_id = cs.object_id "
@@ -428,16 +455,15 @@ function Get-CSGuid{
 	#>
   [CmdletBinding()]
 	param(
+		[ArgumentCompleter({ Get-MAList })]
 		[String]$maName,
 		[Guid]$maGuid,
 		[Guid[]]$mvGuids,
 		[switch]$GridView
 	)
 	process{
-		if(-NOT $maGuid -AND $maName){
-			$maGuid = Get-maguid -maName $maName
-			if(-NOT $maGuid){ Throw "Missing MA '$maName'" }
-		}
+		if(!$maGuid){ [Guid]$maGuid = Get-maguid -maName $maName }
+		if(-NOT $maGuid){ Throw "Missing MA '$maName'" }
 		
 		$DataTable = New-Object system.Data.DataTable "csGuids"
 		$DataTable.Columns.Add("cs-dn")
@@ -527,6 +553,17 @@ function Get-SearchMV{
 	}
 }
 
+function Get-MVObjects{
+	param(
+		[guid[]]$MVguids
+	)
+	
+	$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
+	[xml]$MVsXml = $MMSWebService.GetMVObjects($MVguids,1,[uint32]::MaxValue,[uint32]::MaxValue,0,$null)
+	$MVsXml
+	
+}
+
 function Get-ExecutionHistory{
 	<#
 	  .SYNOPSIS
@@ -544,21 +581,16 @@ function Get-ExecutionHistory{
 	#>
   [CmdletBinding()]
 	param(
-		[string]$maName,
-		[guid]$maGuid,
+		[ArgumentCompleter({ Get-MAList })]
+		[String]$maName,
+		[Guid]$maGuid,
 		[Parameter(Mandatory = $true)]
 		[int]$runNumber
 	)	
 	process{
 		#Get MA guid
-		if(-NOT $maGuid){
-			[Guid]$maGuid = Get-MAguid -maName $maName
-			if(-NOT $maGuid){
-				$logger.Error("Missing MA '$maName'")
-				Throw "Missing MA '$maName'"
-				return
-			}
-		}
+		if(!$maGuid) { $maGuid = Get-maguid -maName $maName }
+		if(-NOT $maGuid){ Throw "Missing MA '$maName'" }
 		
 		$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
 		[xml]$MMSWebService.GetExecutionHistory(("<execution-history-req ma=`"{0}`"><run-number>{1}</run-number><errors-summary>true</errors-summary></execution-history-req>" -f "{$maGuid}".ToUpper(),$runNumber))
@@ -648,8 +680,9 @@ function Run-Preview{
 	#>
   [CmdletBinding()]
 	param(
-		[Guid]$maGuid,
+		[ArgumentCompleter({ Get-MAList })]
 		[String]$maName,
+		[Guid]$maGuid,
 		[Parameter(Mandatory = $true)]
 		[Guid[]]$csGuids,
 		[switch]$delta,
@@ -662,10 +695,9 @@ function Run-Preview{
 		#}
 		$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
 		
-		if(-NOT $maGuid){
-			[Guid]$maGuid = Get-maguid -maName $maName
-			if(-NOT $maGuid){ Throw "Missing MA '$maName'" }
-		}
+		if(!$maGuid){ [Guid]$maGuid = Get-maguid -maName $maName }
+		if(-NOT $maGuid){ Throw "Missing MA '$maName'" }
+		
 		$XMLString = New-Object System.Text.StringBuilder
 		$ErrorString = New-Object System.Text.StringBuilder
 	
@@ -700,9 +732,9 @@ function Disconnect-CSobject{
 	  .DESCRIPTION
 	  Disconnect CS objects from MV
 	  .EXAMPLE
-	  Disconnect-CS -maName AD -csGuid "166cc497-4b0e-4030-9b03-8f81cfbb7052"
+	  Disconnect-CS -maName AD -csGuids "166cc497-4b0e-4030-9b03-8f81cfbb7052"
 	  .EXAMPLE
-	  Disconnect-CS -maName AD -csGuid @("166cc497-4b0e-4030-9b03-8f81cfbb7052","166cc498-4b0e-4030-9b03-8f81cfbb7052")
+	  Disconnect-CS -maName AD -csGuids @("166cc497-4b0e-4030-9b03-8f81cfbb7052","166cc498-4b0e-4030-9b03-8f81cfbb7052")
 	  .PARAMETER MMSWebService
 	  MMSWebService object
 	  .PARAMETER maGuid
@@ -714,16 +746,15 @@ function Disconnect-CSobject{
 	#>
   [CmdletBinding()]
 	param(
+		[ArgumentCompleter({ Get-MAList })]
 		[String]$maName,
 		[Guid]$maGuid,
 		[Parameter(Mandatory = $true)]
 		[Guid[]]$csGuids	
 	)
 	process{
-		if(-NOT $maGuid){
-			[Guid]$maGuid = Get-maguid -maName $maName
-			if(-NOT $maGuid){ Throw "Missing MA '$maName'" }
-		}
+		if(!$maGuid){ [Guid]$maGuid = Get-maguid -maName $maName }
+		if(-NOT $maGuid){ Throw "Missing MA '$maName'" }
 		
 		$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
 		foreach($cs in  $csGuids){
@@ -761,6 +792,7 @@ function Join-CS-MV{
 	#>
   [CmdletBinding()]
 	param(
+		[ArgumentCompleter({ Get-MAList })]
 		[String]$maName,
 		[Guid]$maGuid,
 		[Parameter(Mandatory = $true)]
@@ -770,10 +802,8 @@ function Join-CS-MV{
 		[String]$mvObjectType = "person"
 	)
 	process{
-		if(-NOT $maGuid){
-			[Guid]$maGuid = Get-maguid -maName $maName
-			if(-NOT $maGuid){ Throw "Missing MA '$maName'" }
-		}
+		if(!$maGuid){ [Guid]$maGuid = Get-maguid -maName $maName }
+		if(-NOT $maGuid){ Throw "Missing MA '$maName'" }
 		
 		$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
 		$string = $MMSWebService.Join("{$maGuid}".ToUpper(),"{$csGuid}".ToUpper(),$mvObjectType,"{$mvGuid}".ToUpper())
@@ -807,6 +837,8 @@ function Set-ConnectorState{
 	#>
   [CmdletBinding()]
 	param(
+		[parameter(Mandatory=$true)]
+		[ArgumentCompleter({ Get-MAList })]
 		[String]$maName,
 		[Guid]$maGuid,
 		[Parameter(Mandatory = $true)]
@@ -818,10 +850,8 @@ function Set-ConnectorState{
 		[String]$ConnectorState = "CONNECTORSTATE_NORMAL"
 	)
 	process{
-		if(-NOT $maGuid){
-			[Guid]$maGuid = Get-maguid -maName $maName
-			if(-NOT $maGuid){ Throw "Missing MA '$maName'" }
-		}
+		if(!$maGuid){ [Guid]$maGuid = Get-maguid -maName $maName }
+		if(-NOT $maGuid){ Throw "Missing MA '$maName'" }
 		
 		$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
 		foreach($csGuid in $csGuids){
@@ -849,7 +879,12 @@ function Refresch-synchronizationRule{
 	process{
 
 		$MVsynchronizationRules = Get-SearchMV -objecttype "synchronizationRule"
-		Run-Preview -maGuid $MVsynchronizationRules.'mv-objects'.'mv-object'[0].'cs-mv-links'.'cs-mv-value'.'ma-guid' -commit -csGuid ($MVsynchronizationRules.'mv-objects'.'mv-object'.'cs-mv-links'.'cs-mv-value'.'cs-guid')
+		$result = Run-Preview -maGuid $MVsynchronizationRules.'mv-objects'.'mv-object'[0].'cs-mv-links'.'cs-mv-value'.'ma-guid' -commit -csGuid ($MVsynchronizationRules.'mv-objects'.'mv-object'.'cs-mv-links'.'cs-mv-value'.'cs-guid')
+		
+		foreach($error in $result.Previews.Error){
+			write-host -ForegroundColor Red $error.InnerXml
+		}
+		return $result 
 	}
 }
 
@@ -1069,7 +1104,7 @@ function get-MIMSyncBackup{
 	)
 	process{
 		$tempPath = $env:TEMP + "\$([datetime]::Now.ToString("yyyyMMdd"))"
-		mkdir $tempPath 
+		$temp = mkdir $tempPath 
 		
 		#Set-Alias svrexport "$FIM\Synchronization Service\Bin\svrexport.exe"
 		
@@ -1088,9 +1123,12 @@ function get-MIMSyncBackup{
 			Start-Process "$($par.Path)\Bin\miiskmu.exe" -Args "/e $tempPath\Encryption_keys.bin","/u:$StartName $password" -Verb runas -Wait
 		}
 		
-		#511
-		$MVXMLdata = [xml]$MMSWebService.GetMVData(511)
+		#
+		#[Microsoft.DirectoryServices.MetadirectoryServices.UI.PropertySheetBase.MVDataEnum]::MV_ALL 511
+		$MVXMLdata = [xml]$MMSWebService.GetMVData([Microsoft.DirectoryServices.MetadirectoryServices.UI.PropertySheetBase.MVDataEnum]::MV_ALL)
+		"<saved-mv-configuration server='{0}' export-date='{1}'>{2}</saved-mv-configuration>" -f $env:computername, [datetime]::Now.ToString("s"), $MVXMLdata.InnerXml | Out-File -Encoding utf8 (join-path $tempPath ("mv.xml"))
 		"<export-mv-schema server='{0}' export-date='{1}'>{2}</export-mv-schema>" -f $env:computername, [datetime]::Now.ToString("s"), $MVXMLdata.'mv-data'.schema.InnerXml | Out-File -Encoding utf8 (join-path $tempPath ("mv-schema.xml"))
+		
 
 		#MA Data
 		$maGuid = $null
@@ -1104,7 +1142,7 @@ function get-MIMSyncBackup{
 			
 			#maexport $maName[$i] (join-path $tempPath ($maName[$i]+".xml"))
 			
-			$MAXmldata = [xml]$MMSWebService.ExportManagementAgent($maName[$i],$false,$true,[datetime]::Now.ToString("s"))
+			$MAXmldata = [xml]$MMSWebService.ExportManagementAgent($maName[$i],$false,$false,[datetime]::Now.ToString("s"))
 			$MAXmldata.Save((join-path $tempPath ($maName[$i]+".xml")))
 		}
 		
@@ -1188,6 +1226,226 @@ function Get-FIMServiceHosturl{
 	end{
 		$serviceHost
 	}
+}
+
+Function Get-MailBodyFromMVxml{
+	Param
+    (
+		$Template,
+		$XMLMVEntry,
+		[Hashtable]$SpecialReplaces
+	)
+	process{
+		$SpecialReplaces += @{"datetime.now" = ([DateTime]::Now.ToString("s").Replace("T"," "))}
+
+		$Template_replace = [regex]::Matches($Template,"[%]\w*.\w*[%]") | % { $_.Value |select -Unique }
+
+		foreach($ReplaceName in $Template_replace){
+			$ReplaceName_ = $ReplaceName.Replace("%","")
+			
+			$Value = ""
+			if($SpecialReplaces.ContainsKey($ReplaceName_)){ $Value = $SpecialReplaces[$ReplaceName_] }
+			else{
+				$attribute = $XMLMVEntry.'mv-objects'.'mv-object'.entry.attr|? { $_.Name -eq $ReplaceName_ }
+				if($attribute){ 
+					$Value = $attribute.InnerText 
+				}else{
+					#Try ref values
+					$split = $ReplaceName_.Split(".")
+					$refguid = $XMLMVEntry.'mv-objects'.'mv-object'.entry.'dn-attr'|? { $_.Name -eq $split[0] }
+					if($refguid){
+						$refobjectxml = Get-MVObjects $refguid.InnerText
+						if($refobjectxml.'mv-objects'){
+							
+							if($split.Length -gt 1){
+								$attribute = $refobjectxml.'mv-objects'.'mv-object'.entry.attr|? { $_.Name -eq $split[1] }
+							}else{
+								$attribute = $refobjectxml.'mv-objects'.'mv-object'.entry.attr|? { $_.Name -eq "DisplayName" }
+							}
+							
+							if($attribute){ 
+								$Value = $attribute.InnerText 
+							}
+						}
+					}
+				}
+			}
+			$Template = $Template.Replace($ReplaceName,$Value)
+		}
+	}
+	end{
+		$Template
+	}
+}
+
+Function Get-CSSearch{
+	Param
+    (
+		[parameter(Mandatory=$true)]
+		[ValidateSet(
+			"None",
+			"DN",
+			"RDN",
+			"Subtree",
+			"ImportError",
+			"ExportError",
+			"PendingImport",
+			"PendingExport",
+			"ImportDelta",
+			"ExportDelta",
+			"Joined",
+			"Disconnected",
+			"Connected"
+		)]
+		$SearchMethod,
+		[ValidateSet(
+			"normal",
+			"explicit",
+			"stay"
+		)]
+		$ConnectedStatus,
+		#[parameter(Mandatory=$true)]
+		[ArgumentCompleter({ Get-MAList })]
+		[String]$maName,
+		[Guid]$maGuid,
+		$SearchString,
+		[DateTime]$SinceDate,
+		[switch]$Add,
+		[switch]$Modify,
+		[switch]$Delete,
+		[switch]$DeleteAdd,
+		[switch]$AllAttribute,
+
+		[string[]]$AttributeArray = $null
+	)
+	begin{
+		
+
+	}
+	process{
+
+		if(!$maGuid){ [Guid]$maGuid = Get-maguid -maName $maName }
+		if(-NOT $maGuid){ Throw "Missing MA '$maName'" }
+		
+		$type = ""
+		switch($SearchMethod){
+			"None" {
+				$type = ""
+			}
+			"DN" {
+				$type = "<searching><dn recursive=`"false`">$SearchString</dn></searching>"
+			}
+			"RDN" {
+				$type = "<searching><rdn>$SearchString</rdn></searching>"
+			}
+			"Subtree" {
+				$type = "<searching><dn recursive=`"true`">$SearchString</dn></searching>"
+			}
+			"ImportError" {
+				$type = "<criteria><import-error>true</import-error></criteria>"
+			}
+			"ExportError" {
+				$type = "<criteria><export-error>true</export-error></criteria>"
+			}
+			"PendingImport" {
+				$type = "<criteria><pending-import"
+				if($Add){$type += " add=`"true`""}
+				if($Modify){$type += " modify=`"true`""}
+				if($Delete){$type += " delete=`"true`""}
+				if($DeleteAdd){$type += " delete-add=`"true`""}
+				$type += "></pending-import></criteria>"
+			}
+			"PendingExport" {
+				$type = "<criteria><pending-export"
+				if($Add){$type += " add=`"true`""}
+				if($Modify){$type += " modify=`"true`""}
+				if($Delete){$type += " delete=`"true`""}
+				if($DeleteAdd){$type += " delete-add=`"true`""}
+				$type += "></pending-export></criteria>"
+			}
+			"ImportDelta" {
+				$type = "<criteria><last-import-delta-time min=`"$($SinceDate.ToUniversalTime().Tostring("yyyy-MM-dd hh:mm:ss.fff"))`"/></criteria>";
+			}
+			"ExportDelta" {
+				$type = "<criteria><last-export-delta-time min=`"$($SinceDate.ToUniversalTime().Tostring("yyyy-MM-dd hh:mm:ss.fff"))`"/></criteria>"
+			}
+			"Joined" {
+				$type = "<criteria><project-join-time min=`"$($SinceDate.ToUniversalTime().Tostring("yyyy-MM-dd hh:mm:ss.fff"))`"/></criteria>";
+			}
+			"Disconnected" {
+				$type = "<criteria><disconnection-time min=`"$($SinceDate.ToUniversalTime().Tostring("yyyy-MM-dd hh:mm:ss.fff"))`"/></criteria>"
+			}
+			"Connected" {
+				$type = "<criteria><connector>true</connector>"
+				if($ConnectedStatus){
+					$type += "<connector-state>$($ConnectedStatus)</connector-state>"
+				}
+				$type += "</criteria>"
+			}
+		}
+		
+		#phantom exclude
+		#$type += = "<phantom-exclude delete=`"true`" link=`"true`" parent=`"true`"></phantom-exclude>"
+
+
+
+		$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
+		$SearchToken = $MMSWebService.ExecuteCSSearch("{$maGuid}".ToUpper(),$type)
+		#write-host "SearchToken: $SearchToken"
+		
+		#<info><totalcount>349</totalcount><readcount>0</readcount></info>
+		[xml]$Info = $MMSWebService.GetObjectInfo($SearchToken)
+		#write-host "$($Info.InnerXml)"
+		$totalcount = [int]$Info.info.totalcount
+		$Count = 0
+		$ReturnList = New-Object System.Collections.ArrayList
+		
+		#[uint64]$CSElementBitMask = [uint64]::MaxValue,
+		if($AllAttribute -OR $AttributeArray){
+			[uint64]$CSEntryBitMask = 17
+		}else{
+			[uint64]$CSEntryBitMask = 12
+		}
+		
+		while($totalcount -gt $count){
+			#[xml]$result = $MMSWebService.GetCSResults($SearchToken,10,18446744057065564159,12,$AttributeArray.Length,$AttributeArray)
+			[xml]$result = $MMSWebService.GetCSResults($SearchToken,10,[uint64]::MaxValue,$CSEntryBitMask,$AttributeArray.Length,$AttributeArray)
+			$Count += [int]$result.batch.count
+			foreach($cs in $result.batch.'cs-objects'.'cs-object'){
+				[void]$ReturnList.Add($cs)
+			}
+			Write-Progress -Activity "GetCSResults $SearchMethod" -Status "GetCSResults $Count/$totalcount" -PercentComplete ($Count/$totalcount*100)
+		}
+		
+		$MMSWebService.ReleaseSessionObjects(@($SearchToken))
+		
+		return $ReturnList
+	}
+	end{
+		
+	}
+}
+
+
+Function get-PendingExportReport{
+	Param
+    (
+		$ExportFile = (join-path (pwd) "MIM-rapport-PendingExport.$([datetime]::Now.ToString("yyyyMMdd_hhmmss")).xml"),
+		$MAList = (Get-MAList)
+	)
+	
+
+	$PendingExportlist = @()
+	foreach($agent in $MAList){
+		$PendingExportlist += Get-CSSearch -maName $agent -SearchMethod PendingExport -AllAttribute -Add -Modify -Delete 
+	}
+	#PendingExports.xslt path: \General\Verktyg\CSExportReportXSLT\PendingExports.xslt
+	"<?xml version = `"1.0`" encoding=`"UTF-8`"?><?xml-stylesheet type=`"text/xsl`" href=`"PendingExports.xslt`"?><mmsml xmlns=`"http://www.microsoft.com/mms/mmsml/v2`" step-type=`"export`"><directory-entries>" | out-file -Append -Encoding utf8 $ExportFile
+
+	$PendingExportlist | % {
+		Write-XmlToScreen $_.'unapplied-export'.InnerXml | out-file -Append -Encoding utf8 $ExportFile
+	}
+	"</directory-entries></mmsml>" | out-file -Append -Encoding utf8 $ExportFile
 }
 
 #Load PropertySheetBase from MIM install path

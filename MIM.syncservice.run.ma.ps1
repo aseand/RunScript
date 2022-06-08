@@ -34,6 +34,21 @@ if((Test-Path (join-path ($PSScriptRoot) "NLog.config.xml")) ){
 	[NLog.LogManager]::Configuration = $Configuration
 }
 
+function profileArgumentCompleter{
+    param ( $commaName,
+            $parameterName,
+            $wordToComplete,
+            $commandAst,
+            $fakeBoundParameters )
+			
+	if ($fakeBoundParameters.ContainsKey('maName')) {
+		[Guid]$maGuid = Get-maguid -maName $fakeBoundParameters.maName
+		
+		$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
+		[array]$profiles = ([xml]$MMSWebService.GetMaData("{$maGuid}".ToUpper(),1048592,539,27)).'ma-data'.'ma-run-data'.'run-configuration'
+		$profiles.name.ToLower() | % { "'$_'" }
+	}
+}
 
 function Start-MA{
 	<#
@@ -71,30 +86,32 @@ function Start-MA{
   [CmdletBinding()]
 	param
 	(
-		[string]$maName,
+		[parameter(Mandatory=$true)]
+		[ArgumentCompleter({ Get-MAList })]
+		[String]$maName,
 		[Parameter(Mandatory = $true)]
+		[ArgumentCompleter({ profileArgumentCompleter @args })]
 		[string]$profile,
 		[int]$TimeOutMin = 0,
 		[int]$DeleteThreshold = -1,
 		[int]$DeleteRatio = 10,
+		$CountChangeOn, #@(@{ Attribute = "AttributeName"; Threshold = 153; Ratio = 10 })
 		[switch]$RunOnChange,
 		[switch]$DontWait,
-		[switch]$SaveCSChangeData,
-		[guid]$maGuid
+		[switch]$SaveCSChangeData
 	)
 	process{
 		
-		$logger = [NLog.LogManager]::GetLogger("MIM.syncservice.run.ma")
-		#$global:logger = [NLog.LogManager]::GetCurrentClassLogger()
+		$StartTime = [DateTime]::Now
+		$logger = [NLog.LogManager]::GetLogger("MIM.syncservice.run.ma.$maName")
 		
 		if($logger.IsDebugEnabled){ 
 			foreach ($Name in ((Get-Command -Name ($PSCmdlet.MyInvocation.InvocationName)).Parameters).Keys) {
 				try{$logger.Debug("$Name :" + (Get-Variable $Name -ValueOnly -ErrorAction SilentlyContinue))}Catch{}
 			}
 		}
-	
-		$StartTime = [DateTime]::Now
 		
+		#
 		if((Get-Service FIMSynchronizationService).Status -ne "Running"){ 
 			$logger.Warn("FIMSynchronizationService not running, try Start-Service")
 			Start-Service FIMSynchronizationService
@@ -102,28 +119,14 @@ function Start-MA{
 		}
 	
 		#Get MA guid
+		[Guid]$maGuid = Get-maguid -maName $maName
 		if(-NOT $maGuid){
-			$returnvalue = Get-MAguid -maName $maName
-			if(-NOT $returnvalue){
-				$logger.Fatal("Start-MA Missing MA '$maName'")
-				Throw "Start-MA Missing MA '$maName'"
-				return
-			}
-			$maGuid = $returnvalue
-		}
-		
-		#Get MA name
-		if(-NOT $maName){
-			$maName = Get-MAname -maGuid $maGuid
-			if(-NOT $maName){
-				$logger.Fatal("Start-MA Missing MA '$maGuid'")
-				Throw "Start-MA Missing MA '$maGuid'"
-				return
-			}
+			$logger.Fatal("Start-MA Missing MA '$maName'")
+			Throw "Start-MA Missing MA '$maName'"
+			return
 		}
 		#
-		$logger = [NLog.LogManager]::GetLogger("MIM.syncservice.run.ma.$maName")
-		
+
 		$RunStatus = Get-MAStatistics -maGuid $maGuid -RunStatus
 		$logger.Debug("MA '$maName' '$maGuid' '$profile' runStatus '$RunStatus' ")
 		if($RunStatus -ne "MA_EXEC_STATE_IDLE")
@@ -160,15 +163,54 @@ function Start-MA{
 			"*export" {
 				$StatCount = $MAStatistics.exportcount
 				if($DeleteThreshold -gt 0 -AND $MAStatistics.exportdelete -gt 0 -AND $MAStatistics.exportdelete -gt $DeleteThreshold){
-					$logger.Fatal("'$Profile' threshold $DeleteThreshold  / " + $MAStatistics.exportdelete )
-					Throw "'$maName' '$Profile' threshold $DeleteThreshold  / " + $MAStatistics.exportdelete 
+					$logger.Fatal("'$Profile' threshold $DeleteThreshold / " + $MAStatistics.exportdelete )
+					Throw "'$maName' '$Profile' threshold $DeleteThreshold / " + $MAStatistics.exportdelete 
 					return
 				}
-				if($DeleteRatio -gt 0 -AND $MAStatistics.exportdelete -gt 0 -AND ($MAStatistics.exportdelete/$MAStatistics.all * 100) -gt $DeleteRatio){
-					$Value = $MAStatistics.exportdelete/$MAStatistics.all * 100
+				#if($DeleteRatio -gt 0 -AND $MAStatistics.exportdelete -gt 0 -AND ($MAStatistics.exportdelete/$MAStatistics.all * 100) -gt $DeleteRatio){
+				if($DeleteRatio -gt 0 -AND $MAStatistics.exportdelete -gt 0 -AND ($MAStatistics.exportdelete/$MAStatistics.totalconnector * 100) -gt $DeleteRatio){
+					#$Value = $MAStatistics.exportdelete/$MAStatistics.all * 100
+					$Value = $MAStatistics.exportdelete/$MAStatistics.totalconnector * 100
 					$logger.Fatal("'$Profile' threshold ratio $DeleteRatio% Current value: $Value%")
 					Throw "'$maName' '$Profile' threshold ratio $DeleteRatio% Current value: $Value%"
 					return
+				}
+				
+				if($CountChangeOn -AND $MAStatistics.exportupdate -gt 0){
+					$CSChangeList = $null
+
+					foreach($CountChange in $CountChangeOn){
+						
+						$ChangeCount = 0
+						$ChangeCountTot = 0
+						
+						if($CountChange.Attribute -eq "*"){
+							$ChangeCount = $MAStatistics.exportupdate
+							#$ChangeCountTot = $MAStatistics.importcount
+						}else{
+							if(!$CSChangeList){
+								#$CSChangeList = Get-CSSearch -maGuid $maGuid -SearchMethod PendingExport -Modify -AllAttribute
+								
+								$AttributeList = $CountChangeOn | % {$_.Attribute}
+								$CSChangeList = Get-CSSearch -maGuid $maGuid -SearchMethod PendingExport -Modify -AttributeArray $AttributeList
+							}
+							
+							$CSChangeList.'unapplied-export'.delta.attr|?{ $_.Name -eq $CountChange.Attribute} | %{ $ChangeCount++ }
+							#$ChangeCountTot = $CSChangeList.Count
+						}
+
+						if($CountChange.Threshold -gt 0 -AND $ChangeCount -gt $CountChange.Threshold){
+							$logger.Fatal("'$Profile' change threshold $($CountChange.Attribute): $($CountChange.Threshold) / $ChangeCount")
+							Throw "'$maName' '$Profile' change threshold $($CountChange.Attribute): $($CountChange.Threshold) / $ChangeCount" 
+							return
+						}
+						
+						if($CountChange.Ratio -gt 0 -AND $ChangeCount -gt 0 -AND ($ChangeCount/$MAStatistics.totalconnector * 100) -gt $CountChange.Ratio){
+							$logger.Fatal("'$Profile' change threshold ratio $($CountChange.Attribute): $($CountChange.Ratio) / $($MAStatistics.totalconnector)")
+							Throw "'$maName' '$Profile' change threshold ratio $($CountChange.Attribute): $($CountChange.Ratio) / $($MAStatistics.totalconnector)" 
+							return
+						}
+					}
 				}
 			}
 			"*import*" {
@@ -177,15 +219,54 @@ function Start-MA{
 				$DontWait = $false
 				$StatCount = $MAStatistics.importcount
 				if($DeleteThreshold -gt 0 -AND $MAStatistics.importdelete -gt 0 -AND $MAStatistics.importdelete -gt $DeleteThreshold){
-					$logger.Fatal("'$Profile' threshold $DeleteThreshold  / " + $MAStatistics.importdelete )
-					Throw "'$maName' '$Profile' threshold $DeleteThreshold  / " + $MAStatistics.importdelete 
+					$logger.Fatal("'$Profile' threshold $DeleteThreshold / " + $MAStatistics.importdelete )
+					Throw "'$maName' '$Profile' threshold $DeleteThreshold / " + $MAStatistics.importdelete 
 					return
 				}
-				if($DeleteRatio -gt 0 -AND $MAStatistics.importdelete -gt 0 -AND ($MAStatistics.importdelete/$MAStatistics.all * 100) -gt $DeleteRatio){
-					$Value = $MAStatistics.importdelete/$MAStatistics.all * 100
+				#if($DeleteRatio -gt 0 -AND $MAStatistics.importdelete -gt 0 -AND ($MAStatistics.importdelete/$MAStatistics.all * 100) -gt $DeleteRatio){
+				if($DeleteRatio -gt 0 -AND $MAStatistics.importdelete -gt 0 -AND ($MAStatistics.importdelete/$MAStatistics.totalconnector * 100) -gt $DeleteRatio){
+					#$Value = $MAStatistics.importdelete/$MAStatistics.all * 100
+					$Value = $MAStatistics.importdelete/$MAStatistics.totalconnector * 100
 					$logger.Fatal("'$Profile' threshold ratio $DeleteRatio% Current value: $Value%")
 					Throw "'$maName' '$Profile' threshold ratio $DeleteRatio% Current value: $Value%"
 					return
+				}
+				
+				if($CountChangeOn -AND $MAStatistics.importupdate -gt 0){
+					$CSChangeList = $null
+
+					foreach($CountChange in $CountChangeOn){
+						
+						$ChangeCount = 0
+						$ChangeCountTot = 0
+						
+						if($CountChange.Attribute -eq "*"){
+							$ChangeCount = $MAStatistics.importupdate
+							#$ChangeCountTot = $MAStatistics.importcount
+						}else{
+							if(!$CSChangeList){
+								#$CSChangeList = Get-CSSearch -maGuid $maGuid -SearchMethod PendingImport -Modify -AllAttribute
+								
+								$AttributeList = $CountChangeOn | % {$_.Attribute}
+								$CSChangeList = Get-CSSearch -maGuid $maGuid -SearchMethod PendingImport -Modify -AttributeArray $AttributeList
+							}
+							
+							$CSChangeList.'pending-import'.delta.attr|?{ $_.Name -eq $CountChange.Attribute} | %{ $ChangeCount++ }
+							#$ChangeCountTot = $CSChangeList.Count
+						}
+
+						if($CountChange.Threshold -gt 0 -AND $ChangeCount -gt $CountChange.Threshold){
+							$logger.Fatal("'$Profile' change threshold $($CountChange.Attribute): $($CountChange.Threshold) / $ChangeCount")
+							Throw "'$maName' '$Profile' change threshold $($CountChange.Attribute): $($CountChange.Threshold) / $ChangeCount" 
+							return
+						}
+						
+						if($CountChange.Ratio -gt 0 -AND $ChangeCount -gt 0 -AND ($ChangeCount/$MAStatistics.totalconnector * 100) -gt $CountChange.Ratio){
+							$logger.Fatal("'$Profile' change threshold ratio $($CountChange.Attribute): $($CountChange.Ratio) / $($MAStatistics.totalconnector)")
+							Throw "'$maName' '$Profile' change threshold ratio $($CountChange.Attribute): $($CountChange.Ratio) / $($MAStatistics.totalconnector)" 
+							return
+						}
+					}
 				}
 			}
 		}
@@ -213,6 +294,7 @@ function Start-MA{
 		}
 		
 		$logger.Info("Start ma '$maName' '$Profile' DontWait:$DontWait SaveCSChangeData:$SaveCSChangeData")
+		if($NameTest){ $DontWait = $false }
 
 		if(-NOT $DontWait){
 			Run-Agent -maName $maName -maGuid $maGuid -Profile $Profile -ProfileXml ("<run-configuration>{0}</run-configuration>" -f $profiles[$Profileindex].InnerXml) -SaveCSChangeData:$SaveCSChangeData -logger $logger
@@ -423,17 +505,30 @@ function Run-Agent{
 			$logger.Info("'$Profile' run for $(($MaStopTime-$MaStartTime).TotalSeconds)s run-number: $newrunnumber")
 			
 			if($result -ne "success"){
-				$logger.Error("'$Profile' $result $newrunnumber")
 				switch -wildcard ($result){
 					"stopped-*" { 
-						$logger.Info("Retry run...")
-						sleep 60
-						$Retry = $true
+						if($result -ne "stopped-object-limit" -OR $result -ne "stopped-server-down" ){
+							$logger.Info("Retry run in 60s ...")
+							sleep 60
+							$Retry = $true
+						}
+					}
+					
+					"no-start-ma" {
+						$logger.Fatal("'$Profile' $result run-number: $newrunnumber")
+					}
+					
+					default {
+						$logger.Error("'$Profile' $result run-number: $newrunnumber")
 					}
 				}
 			}
 			$RetryCount++
 		}while($Retry -AND $RetryCount -lt 2)
+		
+		if($Retry -AND $result -ne "success"){
+			$logger.Fatal("'$Profile' $result run-number: $newrunnumber")
+		}
 		
 		$runnumber = $runhistory.lastRunXml.'run-history'.'run-details'.'run-number'
 		#$MMSWebService = (new-object Microsoft.DirectoryServices.MetadirectoryServices.UI.WebServices.MMSWebService)
@@ -483,8 +578,7 @@ function Run-Agent{
 					}
 				}
 			}
-		}
-			
+		}		
 				
 		if($SaveCSChangeData){
 			#$runhistory = Get-MAStatistics -maGuid $maGuid

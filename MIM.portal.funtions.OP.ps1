@@ -1,6 +1,4 @@
 
-Add-PSSnapin FIMAutomation
-
 function get-FIMConfig{
 	<#
 	  .SYNOPSIS
@@ -56,6 +54,9 @@ function get-FIMConfig{
 		[switch]$SelectOnMulit
 	)
 	process{
+		
+		Add-PSSnapin FIMAutomation
+		
 		if([string]::IsNullOrEmpty($XpathFilter)){
 			$XpathFilter = "/$ObjectType"
 			if($ObjectID){
@@ -137,6 +138,8 @@ function set-FIMConfig{
 		[switch]$ImportConfig
 	)
 	begin{
+		Add-PSSnapin FIMAutomation
+		
 		if(-NOT $Objects){
 			if(test-path $ImportFileName){
 				$Objects = ConvertTo-FIMResource -File $ImportFileName
@@ -238,6 +241,42 @@ function set-FIMConfig{
 			$ImportObjects | Import-FIMConfig
 		}
 	}
+}
+
+function Get-LithnetClient{
+	param(
+		$Hosturl
+	)
+	
+	if(-NOT (Test-Path (join-path ($PSScriptRoot) Lithnet.ResourceManagement.Client.dll)))
+	{
+		$FileName = "Lithnet.nuget.zip"
+		Invoke-WebRequest "https://www.nuget.org/api/v2/package/Lithnet.ResourceManagement.Client/" -OutFile $FileName
+		Add-Type -AssemblyName System.IO.Compression.FileSystem
+		$zip = [System.IO.Compression.ZipFile]::OpenRead((join-path ($PSScriptRoot) $FileName))
+		$zip.Entries|?{$_.FullName.StartsWith("lib/net40/")}|%{[System.IO.Compression.ZipFileExtensions]::ExtractToFile($_, (join-path ($PSScriptRoot) $_.Name), $true)}
+		$zip.Dispose()
+		rm $FileName
+	}
+	
+	Add-Type -Path (join-path ($PSScriptRoot) Lithnet.ResourceManagement.Client.dll)
+	
+	try{ 
+		if($Hosturl){ $client = new-object Lithnet.ResourceManagement.Client.ResourceManagementClient $Hosturl }
+		lse{ $client = new-object Lithnet.ResourceManagement.Client.ResourceManagementClient }
+	
+	}
+	catch{ 
+		if(-NOT $Global:DetectedAddress){
+			. (join-path ($PSScriptRoot) "MIM.syncservice.funtions.OP.ps1")
+			$Global:DetectedAddress = Get-FIMServiceHosturl
+		}
+		$Address = $Global:DetectedAddress
+		
+		$client = new-object Lithnet.ResourceManagement.Client.ResourceManagementClient $Address
+	}
+	
+	return $client
 }
 
 function get-BindingDescriptionConfig{
@@ -437,6 +476,9 @@ function add-Admin{
 		[switch]$OverWriteSID
 	)
 	begin{
+		
+		Add-PSSnapin FIMAutomation
+		
 		#Get AD user
 		$ADParam = @{
 			Identity = $username
@@ -825,22 +867,12 @@ function new-NewGroupByCreteria{
 		[parameter(Mandatory=$true)]
 		[Guid]$Owner,
 		
-		[switch]$Commit
+		[switch]$Commit,
+		
+		$Hosturl
 	)
 	begin{		
-		if(-NOT (Test-Path (join-path ($PSScriptRoot) Lithnet.ResourceManagement.Client.dll)))
-		{
-			$FileName = "Lithnet.nuget.zip"
-			Invoke-WebRequest "https://www.nuget.org/api/v2/package/Lithnet.ResourceManagement.Client/" -OutFile $FileName
-			Add-Type -AssemblyName System.IO.Compression.FileSystem
-			$zip = [System.IO.Compression.ZipFile]::OpenRead((join-path ($PSScriptRoot) $FileName))
-			$zip.Entries|?{$_.FullName.StartsWith("lib/net40/")}|%{[System.IO.Compression.ZipFileExtensions]::ExtractToFile($_, (join-path ($PSScriptRoot) $_.Name), $true)}
-			$zip.Dispose()
-			rm $FileName
-		}
-
-		Add-Type -Path (join-path ($PSScriptRoot) Lithnet.ResourceManagement.Client.dll)
-		$client = new-object Lithnet.ResourceManagement.Client.ResourceManagementClient
+		$client = Get-LithnetClient -Hosturl $Hosturl
 		
 		$FilterXml = "<Filter xmlns:xsd=`"http://www.w3.org/2001/XMLSchema`" xmlns:xsi=`"http://www.w3.org/2001/XMLSchema-instance`" Dialect=`"http://schemas.microsoft.com/2006/11/XPathFilterDialect`" xmlns=`"http://schemas.xmlsoap.org/ws/2004/09/enumeration`">{0}</Filter>"
 	}
@@ -877,43 +909,88 @@ function get-PostProcessingCount{
 	#>
 	param(
 		[DateTime]$Date = [datetime]::Now.AddDays(-1),
-		[String]$Address,
-		[switch]$DetectAddress
-		
+		$Hosturl
 	)
 	begin{		
-		if(-NOT (Test-Path (join-path ($PSScriptRoot) Lithnet.ResourceManagement.Client.dll)))
-		{
-			$FileName = "Lithnet.nuget.zip"
-			Invoke-WebRequest "https://www.nuget.org/api/v2/package/Lithnet.ResourceManagement.Client/" -OutFile $FileName
-			Add-Type -AssemblyName System.IO.Compression.FileSystem
-			$zip = [System.IO.Compression.ZipFile]::OpenRead((join-path ($PSScriptRoot) $FileName))
-			$zip.Entries|?{$_.FullName.StartsWith("lib/net40/")}|%{[System.IO.Compression.ZipFileExtensions]::ExtractToFile($_, (join-path ($PSScriptRoot) $_.Name), $true)}
-			$zip.Dispose()
-			rm $FileName
-		}
-
-		Add-Type -Path (join-path ($PSScriptRoot) Lithnet.ResourceManagement.Client.dll)
-		#$client = new-object Lithnet.ResourceManagement.Client.ResourceManagementClient
-		
-		if($DetectAddress){
-			if(-NOT $Global:DetectedAddress){
-				. (join-path (PWD) "MIM.syncservice.funtions.OP.ps1")
-				$Global:DetectedAddress = Get-FIMServiceHosturl
-			}
-			$Address = $Global:DetectedAddress
-		}
-
-		if($Address){ $client = new-object Lithnet.ResourceManagement.Client.ResourceManagementClient $Address }else{ $client = new-object Lithnet.ResourceManagement.Client.ResourceManagementClient }
+		$client = Get-LithnetClient -Hosturl $Hosturl
 	}
 	
 	process{
+		#^(NotFound|Denied|Validating|Canceling|Validated|Authenticating|Authenticated|Authorizing|Authorized|Failed|Canceled|Committed|CanceledPostProcessing|PostProcessing|PostProcessingError|Completed)$
+
+		
 		#$Request = $client.GetResources("/Request[RequestStatus = 'PostProcessing']")
 		#$Request = $client.GetResources("/Request[RequestStatus = 'PostProcessing' or RequestStatus = 'Validating' or RequestStatus = 'Committed']")
 		#$Request = $client.GetResources("/Request[(CreatedTime > op:subtract-dayTimeDuration-from-dateTime(fn:current-dateTime(), xs:dayTimeDuration('P1D'))) and ((RequestStatus = 'Validating') or (RequestStatus = 'PostProcessing') or (RequestStatus = 'Committed'))]")
 		$DateString = $Date.ToUniversalTime().ToString("s")
-		$Request = $client.GetResources("/Request[(CreatedTime > '$DateString') and ((RequestStatus = 'Validating') or (RequestStatus = 'PostProcessing') or (RequestStatus = 'Committed'))]")
+		$Request = $client.GetResources("/Request[(CreatedTime > '$DateString') and ((RequestStatus = 'Validated') or (RequestStatus = 'Validating') or (RequestStatus = 'PostProcessing') or (RequestStatus = 'Committed'))]")
 		$Request.Count
+	}
+}
+
+function start-SQLJobSQL{
+	<#
+
+	#>
+	param 
+	( 
+		[string]$ServerName,
+		[string]$JobName = "FIM_TemporalEventsJob",
+		[string]$Login,
+		[string]$LoginPassword,
+		[switch]$Wait
+	)
+
+	begin{	
+	}
+	
+	process{
+		try{
+				$connection = New-Object System.Data.SQLClient.SQLConnection
+				$Connection.ConnectionString = "server={0};database=msdb;trusted_connection=true;" -f $ServerName
+
+				if($Login){
+					$Connection.ConnectionString = "server={0};database=msdb;user id={1};password={2};" -f $ServerName,$Login,$LoginPassword
+				}
+				$connection.Open()
+				
+				$cmd = New-Object System.Data.SQLClient.SQLCommand
+				$cmd.Connection = $connection
+				$cmd.CommandText = "exec msdb.dbo.sp_start_job '{0}'" -f $JobName
+				
+				#Write-host "Executing job $JobName on $SQLServer"
+				[void]$cmd.ExecuteNonQuery()
+				sleep 3
+				
+				if($Wait){
+					$cmd = New-Object System.Data.SQLClient.SQLCommand
+					$cmd.Connection = $connection
+					#$cmd.CommandText = "msdb.dbo.sp_help_job @job_name='{0}', @execution_status = 4" -f $JobName
+					$cmd.CommandText = "msdb.dbo.sp_help_job"
+					[void]$cmd.Parameters.AddWithValue("@job_name",$JobName)
+					[void]$cmd.Parameters.AddWithValue("@execution_status",4)
+					#$cmd.Parameters.Add("@execution_status","Int").Value = 4
+					#$cmd.Parameters.Add( "@results", "Int" ).Direction = "ReturnValue"
+					$cmd.CommandType = "StoredProcedure"
+
+					#$cmd.ExecuteNonQuery()
+					$reader = $cmd.ExecuteReader()
+
+					while(!$reader.Read())
+					{
+						#Write-host "Job is still executing. Sleeping..."
+						sleep 1
+						
+						$reader.Close()
+						$reader = $cmd.ExecuteReader()
+					}
+					"$($reader.GetName(21)) $($reader[21])"
+					$reader.Close()
+				}
+				$connection.Close()
+		}Catch{
+			return $_
+		}
 	}
 }
 
@@ -927,12 +1004,16 @@ function start-SQLJob{
 	  start-SQLJob -ServerName "sql.server.namn" -JobName "sql job name" -StepName "step1"
 	  .EXAMPLE
 	  start-SQLJob -ServerName "SQL01.adm.namn.se" -JobName "FIM_TemporalEventsJob" -StepName "step1"
+	  https://www.microsoft.com/en-us/download/confirmation.aspx?id=56833
+	  Get-Module -ListAvailable -Name SQLPS
 	#>
 	param 
 	( 
 		[string]$ServerName,
 		[string]$JobName,
 		[string]$StepName,
+		[string]$Login,
+		[string]$LoginPassword,
 		[switch]$DontWait
 	)
 
@@ -943,6 +1024,15 @@ function start-SQLJob{
 	process{
 		try{
 			$srv = New-Object Microsoft.SqlServer.Management.SMO.Server($ServerName)
+			if($Login){
+				$pass = ConvertTo-SecureString $LoginPassword -AsPlainText -Force
+				$securecred = New-Object System.Management.Automation.PSCredential ($Login, $pass)
+				
+				$credential = get-Credential $securecred
+				$srv.ConnectionContext.LoginSecure = $false
+				$srv.ConnectionContext.Login = $Login
+				$srv.ConnectionContext.set_SecurePassword($credential.Password)
+			}
 			$job = $srv.jobserver.jobs[$JobName] 
 			$step = $job.JobSteps[$StepName]
 			
@@ -969,4 +1059,43 @@ function start-SQLJob{
 			return $_
 		}
 	}
+}
+
+function Copy-PersistentFlow{
+	param 
+	( 
+		[string]$SourceDisplayName,
+		[guid]$SourceGuid,
+		[string]$TargetDisplayName,
+		[guid]$TargetGuid,
+		[switch]$InitialFlow,
+		$Hosturl
+	)
+
+	$client = Get-LithnetClient -Hosturl $Hosturl
+	
+	if($SourceGuid){
+		$Source = $client.GetResource($SourceGuid)
+	}else{
+		$Source = $client.GetResourceByKey("SynchronizationRule","DisplayName",$SourceDisplayName)
+	}
+	
+	if(!$Source){
+		throw "Error no Source found $SourceDisplayName $SourceGuid"
+	}
+	
+	if($TargetGuid){
+		$Target = $client.GetResource($TargetGuid)
+	}else{
+		$Target = $client.GetResourceByKey("SynchronizationRule","DisplayName",$TargetDisplayName)
+	}
+	
+	if(!$Target){
+		throw "Error no Target found $TargetDisplayName $TargetGuid"
+	}
+	
+	write-host "Copy from '$($Source.DisplayName)' PersistentFlow to '$($Target.DisplayName)' PersistentFlow"
+	$Target.Attributes["PersistentFlow"].Value = $Source.Attributes["PersistentFlow"].Value
+	if($InitialFlow){ $Target.Attributes["InitialFlow"].Value = $Source.Attributes["InitialFlow"].Value }
+	$Target.Save()
 }
